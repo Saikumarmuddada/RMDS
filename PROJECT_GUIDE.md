@@ -77,8 +77,8 @@ Operational/conduct rules for participants (own laptops only, silent phones, no 
    * Generated 10 figures (`outputs/figures/01_*.png` through `09_*.png` + `08b`) separating numeric beeswarm (`08`) from true categorical subgroup SHAP (`08b`) and labeling meta-learner log-odds coefficients (`09`).
 
 6. **Submission Export & Automated Testing (`src/modeling.py`, `tests/test_pipeline.py`)**
-   * Exported the top 5 diverse model families (`Uncalibrated_Stack` [= `Calibrated_Stack`], `CatBoost`, `RandomForest`, `LightGBM`, `XGBoost`) into `submissions/challenge_submission_group_<X>_order_<1..5>.csv` verified against `dataset_C_example_submission.csv`.
-   * Built 11 `pytest` tests covering data cleaning, zero leakage, outer validation isolation, calibration/ECE, scientific risk constraints, exact cost math, edge cases (`VE <= 0`, `NaN`), multi-fold SHAP, and submission schema alignment.
+   * Exported the top 5 diverse model families (`Calibrated_Stack`, `CatBoost`, `RandomForest`, `LightGBM`, `XGBoost`) into `submissions/challenge_submission_group_<X>_order_<1..5>.csv` verified against `dataset_C_example_submission.csv`.
+   * Built 15 `pytest` tests covering Categories A–H: data cleaning & duplicate/dtype checks, zero-opinion handling & feature bounds, version-safe LightGBM/XGBoost/CatBoost isolation, respondent-level stacking & calibration isolation, scientific risk constraints, exact cost math & edge cases (`VE <= 0`, `C_v = 0`, `NaN`), multi-fold SHAP stability, and submission schema alignment.
 
 ---
 

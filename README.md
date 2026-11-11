@@ -33,7 +33,7 @@ RMDS/
 ├── PROJECT_GUIDE.md                     # Compliance audit + task-by-task + file-by-file guide
 ├── PRESENTATION.md                      # 6-slide presentation deck outline with figures & metrics
 ├── submissions/
-│   ├── challenge_submission_group_0_order_1.csv  # #1 Uncalibrated_Stack (Bayes-Exact, = Calibrated_Stack)
+│   ├── challenge_submission_group_0_order_1.csv  # #1 Calibrated_Stack (Bayes-Exact; inner CV selected mode='none')
 │   ├── challenge_submission_group_0_order_2.csv  # #2 CatBoost (Bayes-Scaled 0.88)
 │   ├── challenge_submission_group_0_order_3.csv  # #3 RandomForest (Bayes-Exact)
 │   ├── challenge_submission_group_0_order_4.csv  # #4 LightGBM (Bayes-Scaled 1.17)

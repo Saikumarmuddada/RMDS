@@ -43,7 +43,7 @@ def write_markdown_report(
         f"- **Testing rows:** {eda_summary['test_rows']:,}",
         f"- **Features:** {eda_summary['raw_feature_count']} raw features -> {eda_summary['engineered_feature_count']} cleaned + validated features",
         "",
-        "## 2. Town Cost Baselines (Training OOF Population, n=4,756)",
+        f"## 2. Town Cost Baselines (Training OOF Population, n={len(y):,})",
         f"- **Treat None (0% sent):** ${bd_none.total_cost:,.0f} (${bd_none.cost_per_person:,.2f}/person)",
         f"- **Treat All (100% sent):** ${bd_all.total_cost:,.0f} (${bd_all.cost_per_person:,.2f}/person)",
         f"- **Oracle Lower Bound (perfect foresight):** ${bd_oracle.total_cost:,.0f} (${bd_oracle.cost_per_person:,.2f}/person)",

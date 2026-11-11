@@ -63,7 +63,7 @@ Slide-by-slide presentation outline ready for your team's pitch deck, backed dir
 ## Slide 6: Robustness Check & Top 5 Canvas Submissions
 * **Cross-Scenario & VE Sensitivity:** Tested `conservative` (`0.5x`), `base` (`1.0x`), and `severe` (`1.5x`) risk profiles alongside `waned_omicron` (`65%/55%`), `base` (`86%/80%`), `boosted` (`91%/86%`) VE regimes—Bayes policy saved `$140k–$767k` over fixed `0.50` across every single regime, and `Calibrated_Stack` captured **58.4% / 68.2% / 61.9%** of oracle savings across the 3 scenarios.
 * **Top 5 Exported Diverse Submissions (`submissions/`):**
-  1. `Uncalibrated_Stack` (`bayes_exact`, identical to `Calibrated_Stack`, `1,546` test vaccines / `32.6%`)
+  1. `Calibrated_Stack` (`bayes_exact`, inner-CV calibrator=`none`, `1,546` test vaccines / `32.6%`)
   2. `CatBoost` (`bayes_scaled=0.88`, `1,682` / `35.4%`)
   3. `RandomForest` (`bayes_exact`, `1,495` / `31.5%`)
   4. `LightGBM` (`bayes_scaled=1.17`, `1,296` / `27.3%`)

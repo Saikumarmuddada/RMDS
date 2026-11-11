@@ -47,7 +47,7 @@
 
 | Order | Filename | Model | Policy | OOF Total Cost ($) | Test Predicted Vaccinations |
 | ---: | :--- | :--- | :--- | ---: | ---: |
-| 1 | `challenge_submission_group_0_order_1.csv` | Uncalibrated_Stack | bayes_exact | $13,970,808 | 1,546 (32.6%) |
+| 1 | `challenge_submission_group_0_order_1.csv` | Calibrated_Stack | bayes_exact | $13,970,808 | 1,546 (32.6%) |
 | 2 | `challenge_submission_group_0_order_2.csv` | CatBoost | bayes_scaled | $13,992,147 | 1,682 (35.4%) |
 | 3 | `challenge_submission_group_0_order_3.csv` | RandomForest | bayes_exact | $14,004,588 | 1,495 (31.5%) |
 | 4 | `challenge_submission_group_0_order_4.csv` | LightGBM | bayes_scaled | $14,021,900 | 1,296 (27.3%) |

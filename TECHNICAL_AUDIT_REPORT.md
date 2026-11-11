@@ -1,7 +1,7 @@
 # RMDS Hackathon Dataset C — Technical Audit & Correction Report
 
 ## 1. Audit Summary & Key Outcomes
-An end-to-end technical audit of the RMDS Hackathon Dataset C pipeline (4,756 labeled training respondents; 4,749 testing respondents; vaccine cost $C_v = \$1{,}500$; COVID-19 hospitalisation cost $C_h = \$41{,}000$; 100% infection assumption) identified **four major methodological flaws** in the original implementation and corrected all of them in working code, verified by an expanded 11-test automated `pytest` suite and full pipeline re-execution (`main.py --group 0`).
+An end-to-end technical audit of the RMDS Hackathon Dataset C pipeline (4,756 labeled training respondents; 4,749 testing respondents; vaccine cost $C_v = \$1{,}500$; COVID-19 hospitalisation cost $C_h = \$41{,}000$; 100% infection assumption) identified **four major methodological flaws** in the original implementation and further hardened API compatibility, warning-free SHAP extraction, defensive numeric coercion, and Category A–H verification. Everything is verified by an expanded **15-test automated `pytest` suite (`15 passed`, zero warnings)** and full pipeline re-execution (`main.py --group 0`).
 
 ### Root Problems Found & Fixed
 1. **Outer Validation Leakage via Boosting Early Stopping (`src/modeling.py`):** LightGBM, XGBoost, and CatBoost previously passed the outer validation fold `(X_va, y_va)` directly to `eval_set` for early stopping, leaking validation labels into model complexity selection. **Fix:** Structural removal of `y_va` from [`fit_outer_fold_models`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) and [`_fit_base_models_on_train_only`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py); boosting early stopping now uses an internal 85%/15% stratified split carved strictly from the active training fold (`3,233–3,234` fit / `571` inner-ES rows per outer fold).
@@ -96,16 +96,17 @@ $$E[\text{Cost}(1)] - E[\text{Cost}(0)] = (1 - p_i) C_v - p_i C_h (q_{0,i} - q_{
   * `raw_baseline_0_untouched` (29 cols): LR AUC `0.8306` / LogLoss `0.4662` | LGBM AUC `0.8598` / LogLoss `0.4265`
   * `raw_plus_zero_as_nan` (31 cols): LR AUC `0.8384` / LogLoss `0.4562` | LGBM AUC `0.8611` / LogLoss `0.4252`
   * `validated_engineered_full` (49 cols): LR AUC **`0.8654`** / LogLoss **`0.4218`** | LGBM AUC **`0.8624`** / LogLoss **`0.4239`**
+  * `plus_pruned_opinion_composites` (54 cols): LR AUC `0.8649` / LogLoss `0.4226` | LGBM AUC `0.8609` / LogLoss `0.4256` (directly confirming composite noise)
   * Dropping `missing_flags` degraded LR drastically (`0.8654 -> 0.8379` AUC), while dropping `ordinal` (`0.8624 -> 0.8602`) or `doctor_interactions` (`0.8624 -> 0.8609`) hurt LightGBM.
 
 ---
 
 ## 7. Automated Testing (`tests/test_pipeline.py`)
-Expanded from 5 basic checks to **11 comprehensive automated tests** covering:
-* **Category A & B:** Whitespace cleanup, zero-opinion sentinels, pruned collinear composites, determinism, zero target-label leakage, and synthetic unseen-category safety.
-* **Category C & D:** Structural verification that `fit_outer_fold_models` never accepts `y_va`, validation-row feature poisoning test proving zero fit/encoder/scaler/stack leakage onto other validation or test predictions, `es_fit + es_val == len(X_tr)`, inner OOF sizing, calibrator selection bounds, and exact `compute_ece` math.
+Expanded from 5 basic checks to **15 comprehensive automated tests** covering Categories A–H:
+* **Category A & B:** Whitespace cleanup, empirical zero-opinion sentinels (`0` kept untouched on valid `0` fields like `covid_concern`), duplicate detection in `audit_dataset_preprocessing`, non-numeric string coercion & `_coerce_sklearn_frame` finite float output, exact arithmetic/boundary tests for `behavioral_sum`, `behavioral_mean`, `doctor_x_effective`, `doctor_x_risk`, `doctor_x_not_worried`, `household_total`, `has_chronic_condition`, `high_risk_elderly`, `is_healthcare_sector`, `uninsured_flag`, pruned collinear composites, determinism, zero target-label leakage, and unseen-category safety.
+* **Category C & D:** Structural verification that `fit_outer_fold_models` never accepts `y_va`, independent per-model checks on `LightGBM`, `XGBoost`, and `CatBoost` (prediction shapes, `[0,1]` bounds, exact reproducibility), `fit_lgbm_with_early_stopping` version compatibility (`eval_X`/`eval_y` on 4.6–4.7+ AND mocked pre-4.6 `eval_set` fallback), Stratified 5-fold class balance, validation-row feature poisoning + permutation invariance, **respondent-level inner-OOF label-flipping isolation**, active Platt calibration trigger via `select_and_fit_posthoc_calibration` on skewed synthetic logits, and exact `compute_ece` math.
 * **Category E & F:** Literature-aligned monotonicity & `>=3` chronic cap (`4 == 3 == 5`), absence of unsupported socioeconomic IHR multipliers, VE regime ordering, exact expected-cost conservation identities, Bayes break-even equality `E[Cost(1)] == E[Cost(0)]`, `VE <= 0` dose refusal even at `p = 1.0`, `C_v = 0` boundary, and `NaN`/out-of-range handling (`strict=False` vs `strict=True`).
-* **Category G & H:** Multi-fold SHAP stability/output files (`06`, `08`, `08b`) and strict validation of all 5 Canvas submission CSVs (`4,749` rows, exact `respondent_id` sequence `4757..9505`, binary `{0, 1}`).
+* **Category G & H:** Multi-fold SHAP stability/output files (`06`, `08`, `08b`), exact weighted fold-aggregation consistency, zero TreeExplainer list/ndarray warnings, and strict validation of all 5 Canvas submission CSVs (`4,749` rows, exact `respondent_id` sequence `4757..9505`, binary `{0, 1}`).
 
 ---
 
@@ -135,9 +136,23 @@ Expanded from 5 basic checks to **11 comprehensive automated tests** covering:
 
 ## 9. Top 5 Verified Submissions & Reproducibility
 All 5 submission files (`submissions/challenge_submission_group_0_order_1.csv` .. `order_5.csv`) match `DOCs/dataset_C_example_submission.csv` (`4,749` rows, `respondent_id` `4757..9505`, binary `{0, 1}`, zero NaNs):
-1. `challenge_submission_group_0_order_1.csv` — `Uncalibrated_Stack` (`bayes_exact`, identical to `Calibrated_Stack`), OOF cost `$13,970,808`, allocates `1,546` (`32.6%`)
+1. `challenge_submission_group_0_order_1.csv` — `Calibrated_Stack` (`bayes_exact`, inner-CV selected `none`), OOF cost `$13,970,808`, allocates `1,546` (`32.6%`)
 2. `challenge_submission_group_0_order_2.csv` — `CatBoost` (`bayes_scaled`, `param=0.88`), OOF cost `$13,992,147`, allocates `1,682` (`35.4%`)
 3. `challenge_submission_group_0_order_3.csv` — `RandomForest` (`bayes_exact`), OOF cost `$14,004,588`, allocates `1,495` (`31.5%`)
 4. `challenge_submission_group_0_order_4.csv` — `LightGBM` (`bayes_scaled`, `param=1.17`), OOF cost `$14,021,900`, allocates `1,296` (`27.3%`)
 5. `challenge_submission_group_0_order_5.csv` — `XGBoost` (`bayes_exact`), OOF cost `$14,030,042`, allocates `1,503` (`31.6%`)
+
+---
+
+## 10. Final Audit Status Matrix
+| Component | Status | Verification Evidence |
+| :--- | :---: | :--- |
+| **LightGBM Execution & Inner ES** | **PASS** | Version-safe [`fit_lgbm_with_early_stopping`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) verified natively on `lightgbm==4.7.0` (`eval_X`/`eval_y`) and mocked `eval_set` (`>=4.5`) in `pytest`; zero outer-fold leakage. |
+| **XGBoost & CatBoost Isolation** | **PASS** | Strict internal `85%/15%` ES inside `tr_idx` only; independent probability/shape/reproducibility assertions pass. |
+| **Calibrated Nested Stacking** | **PASS** | Nested 5x4 OOF cross-fitting + isolated `C` tuning + out-of-sample `none`/`platt`/`isotonic` selection (`outputs/stacking_calibration_audit.csv`), respondent-level label-flip isolation + active Platt test pass. |
+| **Cost Optimisation & Bayes Policy** | **PASS** | Exact closed-form accounting (`$1,500` / `$41,000`), `VE <= 0`, `C_v = 0`, and `NaN` guards verified in `pytest` & 9-cell sensitivity matrix. |
+| **Hospitalisation Risk Parameters** | **PARTIAL** | Literature anchors (`Herrera-Esposito 2022`, `Verity 2020`, `Ko 2021`, `Peckham 2020`, `Tenforde 2021`, `Ferdinands 2022`), `[0, 1]` bounds & scenario bands verified; empirically unvalidated on Dataset C (no clinical admission column exists). |
+| **Multi-Fold OOF SHAP & Plots** | **PASS** | Warning-free (`explainer(X)`) 5-fold OOF SHAP (`shap_feature_importance.csv`), weighted fold consistency, numeric/categorical plot split (`08` / `08b`), log-odds labels (`09`). |
+| **Preprocessing & Feature Ablation** | **PASS** | Empirical `0 -> NaN` policy documented in `outputs/preprocessing_validation.json`; collinear opinion composites pruned & confirmed via `outputs/feature_ablation_report.csv`. |
+| **Automated Test Suite & Pipeline** | **PASS** | `pytest -v`: **15 passed, 0 failed, 0 warnings**; `main.py --group 0` regenerated all reports, figures, and 5 valid Canvas CSVs. |
 

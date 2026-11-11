@@ -20,6 +20,7 @@ Validation & Stacking Architecture:
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -206,6 +207,33 @@ def _prepare_category_frames(
     return tr_out, va_out, te_out, es_out, cat_vocabs
 
 
+def fit_lgbm_with_early_stopping(
+    model: LGBMClassifier,
+    X_fit: pd.DataFrame,
+    y_fit: np.ndarray,
+    X_es: pd.DataFrame,
+    y_es: np.ndarray,
+    stopping_rounds: int,
+) -> LGBMClassifier:
+    """Fit LGBMClassifier with version-safe early stopping across LightGBM >=4.5 and 4.7+."""
+    fit_params = inspect.signature(model.fit).parameters
+    callbacks = [early_stopping(stopping_rounds=stopping_rounds, verbose=False)]
+    if "eval_X" in fit_params and "eval_y" in fit_params:
+        return model.fit(
+            X_fit,
+            y_fit,
+            eval_X=X_es,
+            eval_y=y_es,
+            callbacks=callbacks,
+        )
+    return model.fit(
+        X_fit,
+        y_fit,
+        eval_set=[(X_es, y_es)],
+        callbacks=callbacks,
+    )
+
+
 def _fit_base_models_on_train_only(
     X_tr: pd.DataFrame,
     y_tr: np.ndarray,
@@ -324,12 +352,13 @@ def _fit_base_models_on_train_only(
         n_jobs=-1,
         verbose=-1,
     )
-    lgb_model.fit(
+    fit_lgbm_with_early_stopping(
+        lgb_model,
         X_fit_cat,
         y_bfit,
-        eval_X=X_es_cat,
-        eval_y=y_bes,
-        callbacks=[early_stopping(stopping_rounds=es_rounds_lgb, verbose=False)],
+        X_es_cat,
+        y_bes,
+        stopping_rounds=es_rounds_lgb,
     )
     val_preds["LightGBM"] = lgb_model.predict_proba(X_va_cat)[:, 1]
     test_preds["LightGBM"] = (
@@ -422,6 +451,39 @@ def _fit_calibrator(mode: str, raw_probs: np.ndarray, y: np.ndarray, seed: int):
     raise ValueError(f"Unsupported calibration mode: {mode}")
 
 
+def select_and_fit_posthoc_calibration(
+    meta_inner_oof: np.ndarray,
+    y_tr: np.ndarray,
+    inner_fold_ids: np.ndarray,
+    seed: int,
+    *,
+    min_improvement: float = 1e-4,
+) -> Tuple[str, object, Dict[str, float]]:
+    """Select calibration mode out-of-sample on inner folds and fit strictly on (meta_inner_oof, y_tr)."""
+    cal_modes = ("none", "platt", "isotonic")
+    cal_eval: Dict[str, float] = {}
+    unique_folds = np.unique(inner_fold_ids)
+
+    for mode in cal_modes:
+        cal_oof = np.zeros(len(y_tr), dtype=np.float64)
+        for j in unique_folds:
+            tr_m = inner_fold_ids != j
+            va_m = inner_fold_ids == j
+            cal_j = _fit_calibrator(mode, meta_inner_oof[tr_m], y_tr[tr_m], seed + int(j))
+            cal_oof[va_m] = _apply_calibrator(cal_j, mode, meta_inner_oof[va_m])
+        cal_eval[mode] = float(log_loss(y_tr, cal_oof))
+
+    best_cal_mode = "none"
+    best_cal_ll = cal_eval["none"]
+    for mode in ("platt", "isotonic"):
+        if cal_eval[mode] < best_cal_ll - min_improvement:
+            best_cal_ll = cal_eval[mode]
+            best_cal_mode = mode
+
+    final_calibrator = _fit_calibrator(best_cal_mode, meta_inner_oof, y_tr, seed)
+    return best_cal_mode, final_calibrator, cal_eval
+
+
 def fit_outer_fold_models(
     X_tr: pd.DataFrame,
     y_tr: np.ndarray,
@@ -490,6 +552,7 @@ def fit_outer_fold_models(
     # 3. Inner CV selection of meta-learner C over uncontaminated Z_inner
     c_grid = [0.05, 0.1, 0.25, 0.5, 1.0]
     best_c, best_c_ll = 0.25, float("inf")
+    oof_by_c: Dict[float, np.ndarray] = {}
     for c_val in c_grid:
         c_oof = np.zeros(len(y_tr), dtype=np.float64)
         for j in range(inner_folds):
@@ -498,18 +561,13 @@ def fit_outer_fold_models(
             m_clf = LogisticRegression(C=c_val, max_iter=1000, random_state=fold_seed)
             m_clf.fit(Z_inner[tr_m], y_tr[tr_m])
             c_oof[va_m] = m_clf.predict_proba(Z_inner[va_m])[:, 1]
+        oof_by_c[c_val] = c_oof
         ll = float(log_loss(y_tr, c_oof))
         if ll < best_c_ll:
             best_c_ll, best_c = ll, c_val
 
     # Strictly inner OOF meta probabilities (used ONLY inside tr_idx for isolated calibration check)
-    meta_inner_oof = np.zeros(len(y_tr), dtype=np.float64)
-    for j in range(inner_folds):
-        tr_m = inner_fold_ids != j
-        va_m = inner_fold_ids == j
-        m_clf = LogisticRegression(C=best_c, max_iter=1000, random_state=fold_seed)
-        m_clf.fit(Z_inner[tr_m], y_tr[tr_m])
-        meta_inner_oof[va_m] = m_clf.predict_proba(Z_inner[va_m])[:, 1]
+    meta_inner_oof = oof_by_c[best_c]
 
     # Fit final outer-fold meta-learner on complete clean Z_inner
     meta_full = LogisticRegression(C=best_c, max_iter=1000, random_state=fold_seed)
@@ -520,28 +578,9 @@ def fit_outer_fold_models(
     )
 
     # 4. Isolated calibration selection & out-of-sample evaluation inside tr_idx
-    cal_modes = ("none", "platt", "isotonic")
-    cal_eval = {}
-    for mode in cal_modes:
-        cal_oof = np.zeros(len(y_tr), dtype=np.float64)
-        for j in range(inner_folds):
-            tr_m = inner_fold_ids != j
-            va_m = inner_fold_ids == j
-            cal_j = _fit_calibrator(mode, meta_inner_oof[tr_m], y_tr[tr_m], fold_seed + j)
-            cal_oof[va_m] = _apply_calibrator(cal_j, mode, meta_inner_oof[va_m])
-        cal_eval[mode] = float(log_loss(y_tr, cal_oof))
-
-    # Prefer simplest 'none' unless post-hoc calibration improves inner OOF LogLoss by >= 1e-4
-    none_ll = cal_eval["none"]
-    best_cal_mode = "none"
-    best_cal_ll = none_ll
-    for mode in ("platt", "isotonic"):
-        if cal_eval[mode] < best_cal_ll - 1e-4:
-            best_cal_ll = cal_eval[mode]
-            best_cal_mode = mode
-
-    # Fit selected calibrator strictly on inner OOF meta probs (never on same observations as final outer eval!)
-    final_calibrator = _fit_calibrator(best_cal_mode, meta_inner_oof, y_tr, fold_seed)
+    best_cal_mode, final_calibrator, cal_eval = select_and_fit_posthoc_calibration(
+        meta_inner_oof, y_tr, inner_fold_ids, fold_seed
+    )
     cal_stack_va = _apply_calibrator(final_calibrator, best_cal_mode, raw_stack_va)
     cal_stack_te = (
         _apply_calibrator(final_calibrator, best_cal_mode, raw_stack_te)
@@ -794,14 +833,21 @@ def export_top5_submissions(
                 }
             )
 
-    # Keep the best-cost policy per model family (deduplicating Stack variants so top 5 stays diverse)
+    # Keep the best-cost policy per model family (preferring Calibrated_Stack on exact Stack ties)
     best_per_family = {}
-    for c in sorted(candidates, key=lambda x: x["oof_cost"]):
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda x: (x["oof_cost"], -int(x["model"] == "Calibrated_Stack"), x["log_loss"]),
+    )
+    for c in sorted_candidates:
         fam = c["diversity_family"]
         if fam not in best_per_family:
             best_per_family[fam] = c
 
-    ranked = sorted(best_per_family.values(), key=lambda x: x["oof_cost"])[:5]
+    ranked = sorted(
+        best_per_family.values(),
+        key=lambda x: (x["oof_cost"], -int(x["model"] == "Calibrated_Stack"), x["log_loss"]),
+    )[:5]
 
     manifest_rows = []
     for order_idx, item in enumerate(ranked, start=1):

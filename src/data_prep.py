@@ -51,6 +51,24 @@ def engineer_features(
         if col in out.columns:
             out[col] = _normalize_whitespace(out[col])
 
+    # Defensive numeric coercion across numeric/ordinal survey inputs
+    numeric_raw_candidates = [
+        f"{p}_concern",
+        f"{p}_knowledge",
+        *BEHAVIORAL_FEATURES,
+        f"doctor_recc_{p}",
+        *OTHER_BINARY_FEATURES,
+        f"opinion_{p}_vacc_effective",
+        f"opinion_{p}_risk",
+        f"opinion_{p}_sick_from_vacc",
+        "household_adults",
+        "household_children",
+        "number_chronic_med_conditions",
+    ]
+    for col in numeric_raw_candidates:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+
     # Explicit missingness flags before imputation
     for col in ("health_insurance", "employment_sector", "income_poverty", "rent_or_own"):
         if col in out.columns:
@@ -201,7 +219,10 @@ def audit_dataset_preprocessing(
         "numeric_feature_count": int(len(num_cols)),
         "categorical_feature_count": int(len(cat_cols)),
         "unseen_test_categories": unseen_test_cats,
-        "undocumented_zero_audit": zero_audit,
+        "undocumented_zero_audit": {
+            "policy_basis": "Empirical distribution decision (not stated in official PDF/image docs): 0 on opinion_covid_vacc_effective (25.0% acceptance) and opinion_covid_risk (27.1%) aligns with rank-3/missingness rather than rank-1 (3.2%/12.5%); mapped 0 -> NaN with explicit _is_zero indicators.",
+            "features": zero_audit,
+        },
         "train_test_feature_column_match": bool(
             get_feature_columns(feat_train, cfg) == get_feature_columns(feat_test, cfg)
         ),
@@ -215,7 +236,7 @@ def run_feature_ablation(
     random_state: int = 42,
 ) -> pd.DataFrame:
     """Evaluate feature groups via leakage-free CV (LogisticRegression & inner-ES LightGBM)."""
-    from lightgbm import LGBMClassifier, early_stopping
+    from lightgbm import LGBMClassifier
     from sklearn.compose import ColumnTransformer
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import LogisticRegression
@@ -223,6 +244,8 @@ def run_feature_ablation(
     from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+    from src.modeling import fit_lgbm_with_early_stopping
 
     y = raw_train[cfg.target_col].to_numpy(dtype=int)
 
@@ -344,12 +367,13 @@ def run_feature_ablation(
                 n_jobs=1,
                 verbose=-1,
             )
-            lgb.fit(
+            fit_lgbm_with_early_stopping(
+                lgb,
                 X_fit,
                 y_fit,
-                eval_X=X_es,
-                eval_y=y_es,
-                callbacks=[early_stopping(80, verbose=False)],
+                X_es,
+                y_es,
+                stopping_rounds=80,
             )
             oof_lgb[va_idx] = lgb.predict_proba(X_va_c)[:, 1]
 
@@ -362,10 +386,33 @@ def run_feature_ablation(
             "lgb_log_loss": float(log_loss(y, oof_lgb)),
         }
 
+    fe_with_pruned = fe_full[all_cols].copy()
+    eff_c, risk_c, worry_c = (
+        f"opinion_{p}_vacc_effective",
+        f"opinion_{p}_risk",
+        f"opinion_{p}_sick_from_vacc",
+    )
+    fe_with_pruned["opinion_net_benefit"] = (
+        fe_full[eff_c] + fe_full[risk_c] - fe_full[worry_c]
+    ).astype(np.float32)
+    fe_with_pruned["opinion_risk_minus_worry"] = (
+        fe_full[risk_c] - fe_full[worry_c]
+    ).astype(np.float32)
+    fe_with_pruned["opinion_pro_vaccine_index"] = (
+        fe_full[eff_c].fillna(3.0) + fe_full[risk_c].fillna(3.0) - fe_full[worry_c].fillna(3.0)
+    ).astype(np.float32)
+    fe_with_pruned["opinion_eff_x_risk"] = (
+        fe_full[eff_c] * fe_full[risk_c]
+    ).astype(np.float32)
+    fe_with_pruned["concern_x_knowledge"] = (
+        fe_full[f"{p}_concern"] * fe_full[f"{p}_knowledge"]
+    ).astype(np.float32)
+
     records = [
         _eval(raw_base, "raw_baseline_0_untouched"),
         _eval(raw_zero_clean, "raw_plus_zero_as_nan"),
         _eval(fe_full[all_cols], "validated_engineered_full"),
+        _eval(fe_with_pruned, "plus_pruned_opinion_composites"),
     ]
     for gname, gcols in groups.items():
         keep = [c for c in all_cols if c not in set(gcols)]

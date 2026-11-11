@@ -11,17 +11,20 @@
   "categorical_feature_count": 10,
   "unseen_test_categories": {},
   "undocumented_zero_audit": {
-    "opinion_covid_vacc_effective": {
-      "train_zero_count": 92,
-      "test_zero_count": 107,
-      "train_zero_target_rate": 0.25,
-      "train_rank1_target_rate": 0.03225806451612903
-    },
-    "opinion_covid_risk": {
-      "train_zero_count": 96,
-      "test_zero_count": 104,
-      "train_zero_target_rate": 0.2708333333333333,
-      "train_rank1_target_rate": 0.1245819397993311
+    "policy_basis": "Empirical distribution decision (not stated in official PDF/image docs): 0 on opinion_covid_vacc_effective (25.0% acceptance) and opinion_covid_risk (27.1%) aligns with rank-3/missingness rather than rank-1 (3.2%/12.5%); mapped 0 -> NaN with explicit _is_zero indicators.",
+    "features": {
+      "opinion_covid_vacc_effective": {
+        "train_zero_count": 92,
+        "test_zero_count": 107,
+        "train_zero_target_rate": 0.25,
+        "train_rank1_target_rate": 0.03225806451612903
+      },
+      "opinion_covid_risk": {
+        "train_zero_count": 96,
+        "test_zero_count": 104,
+        "train_zero_target_rate": 0.2708333333333333,
+        "train_rank1_target_rate": 0.1245819397993311
+      }
     }
   },
   "train_test_feature_column_match": true

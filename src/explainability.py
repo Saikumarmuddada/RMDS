@@ -257,7 +257,7 @@ def _compute_and_plot_shap(
             X_va_cat = apply_category_vocab(X_va, vocabs, for_catboost=False)
 
         explainer = shap.TreeExplainer(lgbm_models[idx_pos])
-        sv = _extract_positive_class_shap(explainer.shap_values(X_va_cat))
+        sv = _extract_positive_class_shap(explainer(X_va_cat).values)
         oof_shap[val_mask, :] = sv
         fold_mean_abs[idx_pos, :] = np.abs(sv).mean(axis=0)
 

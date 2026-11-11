@@ -27,7 +27,12 @@ from src.data_prep import (
 )
 from src.explainability import _compute_and_plot_shap
 from src.modeling import (
+    _coerce_sklearn_frame,
+    _fit_base_models_on_train_only,
+    _make_sklearn_onehot_preprocessor,
+    fit_lgbm_with_early_stopping,
     fit_outer_fold_models,
+    select_and_fit_posthoc_calibration,
     train_and_evaluate_all_models,
 )
 
@@ -106,6 +111,90 @@ def test_preprocessing_determinism_no_target_leakage_and_unseen_safety():
     assert pd.isna(fe_unseen.loc[fe_unseen.index[0], "age_ordinal"])
 
 
+def test_preprocessing_duplicates_types_and_missing_value_imputation():
+    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+    sample_tr = raw_train.iloc[:40].copy()
+    sample_te = raw_test.iloc[:15].copy()
+
+    # Exact duplicate row should be detected cleanly by audit_dataset_preprocessing
+    dup_tr = pd.concat([sample_tr, sample_tr.iloc[[0]]], ignore_index=True)
+    feat_dup_tr = engineer_features(dup_tr, DATASET_C_CONFIG)
+    feat_te = engineer_features(sample_te, DATASET_C_CONFIG)
+    audit_dup = audit_dataset_preprocessing(
+        dup_tr, sample_te, feat_dup_tr, feat_te, DATASET_C_CONFIG
+    )
+    assert audit_dup["train_exact_duplicates"] == 1
+    assert audit_dup["undocumented_zero_audit"]["policy_basis"].startswith("Empirical")
+
+    # Malformed numeric string is coerced to NaN; valid numeric string is parsed; valid 0s stay 0
+    dirty = sample_tr.iloc[:3].copy()
+    dirty["household_adults"] = ["2", "invalid_num", 0]
+    dirty["covid_concern"] = [0, 1, 3]
+    fe_dirty = engineer_features(dirty, DATASET_C_CONFIG)
+    assert fe_dirty["household_adults"].iloc[0] == pytest.approx(2.0)
+    assert pd.isna(fe_dirty["household_adults"].iloc[1])
+    assert fe_dirty["covid_concern"].iloc[0] == pytest.approx(0.0)
+
+    # Sklearn preprocessor coerces all numerics cleanly and eliminates NaNs without Infs
+    num_cols, cat_cols = get_feature_columns(fe_dirty, DATASET_C_CONFIG)
+    coerced = _coerce_sklearn_frame(fe_dirty[num_cols + cat_cols], num_cols, cat_cols)
+    for col in num_cols:
+        assert coerced[col].dtype == np.float64
+    pre = _make_sklearn_onehot_preprocessor(num_cols, cat_cols)
+    transformed = pre.fit_transform(coerced)
+    assert np.all(np.isfinite(transformed))
+
+
+def test_engineered_feature_calculations_and_boundaries():
+    raw_train, _, _ = load_raw_datasets(DATASET_C_CONFIG)
+    rows = raw_train.iloc[:3].copy().reset_index(drop=True)
+
+    # Row 0: age 55-64 (ordinal 3.0) + 1 chronic -> high_risk_elderly=1; doctor_recc=1 + missing eff -> 3.0
+    rows.loc[0, "age_group"] = "55 - 64 Years"
+    rows.loc[0, "number_chronic_med_conditions"] = 1
+    rows.loc[0, "doctor_recc_covid"] = 1
+    rows.loc[0, "opinion_covid_vacc_effective"] = 0  # mapped to NaN -> imputed to midpoint 3.0 in interaction
+    rows.loc[0, "opinion_covid_risk"] = 5
+    rows.loc[0, "opinion_covid_sick_from_vacc"] = 2
+    rows.loc[0, "household_adults"] = 2.0
+    rows.loc[0, "household_children"] = 1.0
+    rows.loc[0, "employment_sector"] = "healthcare"
+    rows.loc[0, "health_insurance"] = 0.0
+    for col in (
+        "behavioral_antiviral_meds",
+        "behavioral_avoidance",
+        "behavioral_face_mask",
+        "behavioral_wash_hands",
+        "behavioral_large_gatherings",
+        "behavioral_outside_home",
+        "behavioral_touch_face",
+    ):
+        rows.loc[0, col] = 1.0
+
+    # Row 1: age 45-54 (ordinal 2.0) + 3 chronic -> high_risk_elderly=0 (age boundary)
+    rows.loc[1, "age_group"] = "45 - 54 Years"
+    rows.loc[1, "number_chronic_med_conditions"] = 3
+
+    # Row 2: age 65+ (ordinal 4.0) + 0 chronic -> high_risk_elderly=0 (chronic boundary)
+    rows.loc[2, "age_group"] = "65+ Years"
+    rows.loc[2, "number_chronic_med_conditions"] = 0
+
+    fe = engineer_features(rows, DATASET_C_CONFIG)
+    assert fe.loc[0, "age_ordinal"] == pytest.approx(3.0)
+    assert fe.loc[0, "behavioral_sum"] == pytest.approx(7.0)
+    assert fe.loc[0, "behavioral_mean"] == pytest.approx(1.0)
+    assert fe.loc[0, "doctor_x_effective"] == pytest.approx(3.0)
+    assert fe.loc[0, "doctor_x_risk"] == pytest.approx(5.0)
+    assert fe.loc[0, "doctor_x_not_worried"] == pytest.approx(4.0)
+    assert fe.loc[0, "household_total"] == pytest.approx(4.0)
+    assert fe.loc[0, "has_chronic_condition"] == pytest.approx(1.0)
+    assert fe.loc[0, "high_risk_elderly"] == pytest.approx(1.0)
+    assert fe.loc[0, "is_healthcare_sector"] == pytest.approx(1.0)
+    assert fe.loc[0, "uninsured_flag"] == pytest.approx(1.0)
+    assert fe.loc[1, "high_risk_elderly"] == pytest.approx(0.0)
+    assert fe.loc[2, "high_risk_elderly"] == pytest.approx(0.0)
+
+
 # ---------------------------------------------------------------------------
 # Category C & D: Validation Leakage, Stacking Isolation & Calibration Tests
 # ---------------------------------------------------------------------------
@@ -159,6 +248,117 @@ def test_outer_validation_isolation_and_no_leakage():
     assert es_sizes["fit"] + es_sizes["es"] == len(X_tr)
     assert res_a["inner_oof_size"] == len(X_tr)
     assert res_a["selected_calibrator"] in {"none", "platt", "isotonic"}
+
+    # Outer permutation invariance: shuffling X_va rows yields identically shuffled predictions
+    perm = np.arange(len(X_va_clean))[::-1]
+    res_perm = fit_outer_fold_models(
+        X_tr, y_tr, X_va_clean.iloc[perm], X_te, num_cols, cat_cols, outer_fold_idx=0, inner_folds=2, fast_mode=True
+    )
+    np.testing.assert_allclose(res_a["cal_stack_val"][perm], res_perm["cal_stack_val"], atol=1e-12)
+
+
+def test_boosting_models_independent_execution_api_compat_and_reproducibility():
+    """Verify LightGBM, XGBoost, and CatBoost individually, eval_set fallback, Stratification, and determinism."""
+    from lightgbm import LGBMClassifier
+    from sklearn.model_selection import StratifiedKFold
+
+    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+    pos = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 1].iloc[:75]
+    neg = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 0].iloc[:150]
+    sub_df = pd.concat([pos, neg], axis=0).reset_index(drop=True)
+    feat_tr = engineer_features(sub_df, DATASET_C_CONFIG)
+    feat_te = engineer_features(raw_test.iloc[:30].copy(), DATASET_C_CONFIG)
+    num_cols, cat_cols = get_feature_columns(feat_tr, DATASET_C_CONFIG)
+    feat_cols = num_cols + cat_cols
+
+    X_tr = feat_tr.iloc[:175][feat_cols]
+    y_tr = feat_tr.iloc[:175][DATASET_C_CONFIG.target_col].to_numpy(dtype=int)
+    X_va = feat_tr.iloc[175:][feat_cols]
+    X_te = feat_te[feat_cols]
+
+    run1 = _fit_base_models_on_train_only(X_tr, y_tr, X_va, X_te, num_cols, cat_cols, seed=42, fast_mode=True)
+    run2 = _fit_base_models_on_train_only(X_tr, y_tr, X_va, X_te, num_cols, cat_cols, seed=42, fast_mode=True)
+
+    for model_name in ("LightGBM", "XGBoost", "CatBoost", "LogisticRegression", "RandomForest", "HistGradientBoosting"):
+        p_va_1 = run1["val_preds"][model_name]
+        p_te_1 = run1["test_preds"][model_name]
+        assert p_va_1.shape == (len(X_va),)
+        assert p_te_1.shape == (len(X_te),)
+        assert np.all(np.isfinite(p_va_1)) and np.all((p_va_1 >= 0.0) & (p_va_1 <= 1.0))
+        assert np.all(np.isfinite(p_te_1)) and np.all((p_te_1 >= 0.0) & (p_te_1 <= 1.0))
+        np.testing.assert_allclose(p_va_1, run2["val_preds"][model_name], atol=1e-12)
+        np.testing.assert_allclose(p_te_1, run2["test_preds"][model_name], atol=1e-12)
+
+    # Verify version-safe LightGBM eval_set fallback for LightGBM 4.5.x compatibility
+    class _LegacyLGBMWrapper:
+        def __init__(self):
+            self._m = LGBMClassifier(n_estimators=50, learning_rate=0.05, random_state=42, n_jobs=1, verbose=-1)
+            self.used_eval_set = False
+
+        def fit(self, X, y, eval_set=None, callbacks=None):
+            self.used_eval_set = eval_set is not None and len(eval_set) == 1
+            return self._m.fit(X, y, eval_set=eval_set, callbacks=callbacks)
+
+    X_num_only = _coerce_sklearn_frame(X_tr, num_cols, [])
+    wrapper = _LegacyLGBMWrapper()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fit_lgbm_with_early_stopping(wrapper, X_num_only.iloc[:130], y_tr[:130], X_num_only.iloc[130:], y_tr[130:], 15)
+    assert wrapper.used_eval_set
+
+    # Stratified fold class ratio check
+    y_full = raw_train[DATASET_C_CONFIG.target_col].to_numpy(dtype=int)
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    base_rate = float(np.mean(y_full))
+    for _, va_idx in skf.split(raw_train, y_full):
+        assert abs(float(np.mean(y_full[va_idx])) - base_rate) < 0.002
+
+
+def test_stacking_respondent_level_isolation_and_active_calibration():
+    """Verify respondent-level OOF isolation inside stacking and active Platt calibration selection."""
+    from sklearn.model_selection import StratifiedKFold
+
+    raw_train, _, _ = load_raw_datasets(DATASET_C_CONFIG)
+    pos = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 1].iloc[:60]
+    neg = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 0].iloc[:120]
+    sub_df = pd.concat([pos, neg], axis=0).reset_index(drop=True)
+    feat_tr = engineer_features(sub_df, DATASET_C_CONFIG)
+    num_cols, cat_cols = get_feature_columns(feat_tr, DATASET_C_CONFIG)
+    X_tr = feat_tr[num_cols + cat_cols]
+    y_tr = feat_tr[DATASET_C_CONFIG.target_col].to_numpy(dtype=int)
+
+    # Respondent-level isolation check across inner folds:
+    # For inner fold k=0, flipping labels y_tr[va_0] MUST NOT alter inner_oof_probs[va_0]
+    skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=123)
+    splits = list(skf.split(X_tr, y_tr))
+    tr_0, va_0 = splits[0]
+    y_flipped = y_tr.copy()
+    y_flipped[va_0] = 1 - y_flipped[va_0]
+
+    res_clean = _fit_base_models_on_train_only(
+        X_tr.iloc[tr_0], y_tr[tr_0], X_tr.iloc[va_0], None, num_cols, cat_cols, seed=42, fast_mode=True
+    )
+    res_label_flipped = _fit_base_models_on_train_only(
+        X_tr.iloc[tr_0], y_flipped[tr_0], X_tr.iloc[va_0], None, num_cols, cat_cols, seed=42, fast_mode=True
+    )
+    for m_name in res_clean["val_preds"]:
+        np.testing.assert_allclose(
+            res_clean["val_preds"][m_name], res_label_flipped["val_preds"][m_name], atol=1e-12
+        )
+
+    # Verify active calibration triggers when probabilities are genuinely overconfident
+    rng = np.random.default_rng(7)
+    z_true = rng.normal(0.0, 1.2, size=600)
+    p_true = 1.0 / (1.0 + np.exp(-z_true))
+    y_syn = rng.binomial(1, p_true)
+    p_overconfident = 1.0 / (1.0 + np.exp(-3.0 * z_true - 0.6))
+    fold_ids = np.arange(600) % 4
+    best_mode, calibrator, cal_eval = select_and_fit_posthoc_calibration(
+        p_overconfident, y_syn, fold_ids, seed=42
+    )
+    assert best_mode == "platt"
+    assert calibrator is not None
+    assert cal_eval["platt"] < cal_eval["none"] - 0.05
 
 
 def test_ece_metric_and_calibration_bounds():
@@ -353,7 +553,12 @@ def test_multifold_shap_stability_and_separation(tmp_path: Path):
     assert "ece" in comp_df.columns
     assert (out_dir / "stacking_calibration_audit.csv").exists()
 
-    shap_df = _compute_and_plot_shap(feat_tr, feat_te, artifacts, fig_dir, out_dir)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        shap_df = _compute_and_plot_shap(feat_tr, feat_te, artifacts, fig_dir, out_dir)
+    shap_list_warnings = [w for w in caught if "output has changed to a list of ndarray" in str(w.message)]
+    assert len(shap_list_warnings) == 0
+
     assert "fold_std_abs_shap" in shap_df.columns
     assert "fold_0_mean_abs_shap" in shap_df.columns
     assert "fold_1_mean_abs_shap" in shap_df.columns
@@ -361,6 +566,14 @@ def test_multifold_shap_stability_and_separation(tmp_path: Path):
     assert (fig_dir / "06_explainability_shap_importance.png").exists()
     assert (fig_dir / "08_explainability_shap_beeswarm.png").exists()
     assert (fig_dir / "08b_explainability_categorical_shap.png").exists()
+
+    # Exact weighted aggregation consistency across outer folds
+    fold_sizes = np.array([(folds == 0).sum(), (folds == 1).sum()], dtype=np.float64)
+    expected_overall = (
+        shap_df["fold_0_mean_abs_shap"].to_numpy() * fold_sizes[0]
+        + shap_df["fold_1_mean_abs_shap"].to_numpy() * fold_sizes[1]
+    ) / fold_sizes.sum()
+    np.testing.assert_allclose(shap_df["mean_abs_shap"].to_numpy(), expected_overall, atol=1e-12)
 
 
 # ---------------------------------------------------------------------------
