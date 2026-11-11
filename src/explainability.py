@@ -124,13 +124,27 @@ def _plot_model_cost_comparison(
         edgecolor="black",
     )
     for _, row in df_s.iterrows():
+        label_txt = row["model"]
+        offset = (6, 4)
+        ha = "left"
+        if label_txt == "Uncalibrated_Stack":
+            offset = (-10, 4)
+            ha = "right"
+        elif label_txt == "Calibrated_Stack":
+            offset = (-10, -14)
+            ha = "right"
+        elif label_txt == "LightGBM":
+            offset = (6, -10)
         axes[1].annotate(
-            row["model"],
+            label_txt,
             (row["roc_auc"], row["captured_oracle_pct"]),
             textcoords="offset points",
-            xytext=(6, 4),
-            fontsize=9,
+            xytext=offset,
+            ha=ha,
+            fontsize=8.8,
         )
+    auc_span = max(df_s["roc_auc"].max() - df_s["roc_auc"].min(), 1e-3)
+    axes[1].set_xlim(df_s["roc_auc"].min() - 0.08 * auc_span, df_s["roc_auc"].max() + 0.18 * auc_span)
     axes[1].set_xlabel("5-Fold CV ROC-AUC")
     axes[1].set_ylabel("Oracle Achievable Cost Savings Captured (%)")
     axes[1].set_title("Discrimination (ROC-AUC) vs. Cost Optimization Performance", fontsize=12.5, fontweight="bold")

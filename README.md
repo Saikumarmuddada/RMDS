@@ -13,26 +13,31 @@ RMDS/
 │   ├── data_prep.py                     # Cleaning (whitespace, 0->NaN flags) & feature engineering
 │   ├── cost_model.py                    # Hospitalisation IHR model, cost matrix, Bayes threshold
 │   ├── eda.py                           # EDA stats & visualizations (Figures 01–03)
-│   ├── modeling.py                      # 5-fold CV (6 model families + calibrated stack) & export
-│   └── explainability.py                # SHAP feature importance & cost plots (Figures 04–07)
+│   ├── modeling.py                      # Nested 5x4 leakage-free CV (6 models + cross-fitted stack)
+│   └── explainability.py                # Multi-fold OOF SHAP, calibration/ECE & sensitivity plots
 ├── notebooks/
 │   └── RMDS_Hackathon_Dataset_C.ipynb   # Google Colab & Jupyter ready walkthrough notebook
 ├── tests/
-│   └── test_pipeline.py                 # Unit tests for data cleaning, cost math, submissions
+│   └── test_pipeline.py                 # 11 pytest checks (preprocessing, leakage, cost, SHAP, schema)
 ├── outputs/
-│   ├── figures/                         # 9 presentation-ready PNG charts (01–09)
-│   ├── model_comparison.csv             # Full OOF metrics across all models & scenarios
+│   ├── figures/                         # 10 publication-grade PNG charts (01–09 + 08b)
+│   ├── model_comparison.csv             # Full nested CV metrics across all 8 models & cost breakdowns
 │   ├── sensitivity_matrix.csv           # Cross-scenario cost & oracle savings matrix
-│   ├── shap_feature_importance.csv      # SHAP rankings
+│   ├── ve_and_risk_sensitivity_grid.csv # IHR scenario x VE regime x Sex sensitivity matrix
+│   ├── stacking_calibration_audit.csv   # Inner OOF LogLoss calibration selection audit (none/platt/isotonic)
+│   ├── preprocessing_validation.json    # Automated dataset integrity & zero-sentinel audit
+│   ├── feature_ablation_report.csv      # Leakage-free CV feature-group ablation benchmark
+│   ├── shap_feature_importance.csv      # 5-fold OOF SHAP rankings with fold SD stability
 │   └── hackathon_report.md              # Generated summary report
+├── TECHNICAL_AUDIT_REPORT.md            # Complete technical audit, literature grounding & Before/After comparison
 ├── PROJECT_GUIDE.md                     # Compliance audit + task-by-task + file-by-file guide
 ├── PRESENTATION.md                      # 6-slide presentation deck outline with figures & metrics
 ├── submissions/
-│   ├── challenge_submission_group_0_order_1.csv  # #1 Calibrated_Stack (Bayes-Exact)
-│   ├── challenge_submission_group_0_order_2.csv  # #2 XGBoost (Bayes-Exact)
-│   ├── challenge_submission_group_0_order_3.csv  # #3 LightGBM (Bayes-Exact)
-│   ├── challenge_submission_group_0_order_4.csv  # #4 CatBoost (Bayes-Exact)
-│   ├── challenge_submission_group_0_order_5.csv  # #5 RandomForest (Bayes-Exact)
+│   ├── challenge_submission_group_0_order_1.csv  # #1 Uncalibrated_Stack (Bayes-Exact, = Calibrated_Stack)
+│   ├── challenge_submission_group_0_order_2.csv  # #2 CatBoost (Bayes-Scaled 0.88)
+│   ├── challenge_submission_group_0_order_3.csv  # #3 RandomForest (Bayes-Exact)
+│   ├── challenge_submission_group_0_order_4.csv  # #4 LightGBM (Bayes-Scaled 1.17)
+│   ├── challenge_submission_group_0_order_5.csv  # #5 XGBoost (Bayes-Exact)
 │   └── submission_manifest.csv
 └── main.py                              # Single CLI entrypoint
 ```

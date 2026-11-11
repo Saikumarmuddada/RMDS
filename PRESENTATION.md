@@ -26,47 +26,48 @@ Slide-by-slide presentation outline ready for your team's pitch deck, backed dir
 ---
 
 ## Slide 3: Hospitalisation Risk Matrix & Bayes-Optimal Decision Rule
-* **Hospitalisation Risk Factors:** Estimated $p_{\text{hosp, unvacc}}(x_i)$ and $p_{\text{hosp, vacc}}(x_i)$ from `age_group`, `number_chronic_med_conditions`, `sex`, `health_insurance`, and `income_poverty` (`85%` vaccine protection, `80%` for `65+` / `>=2` chronic conditions).
+* **Literature-Grounded Hospitalisation Estimates (Modelled, No Direct Outcome in Dataset C):** Estimated $p_{\text{hosp, unvacc}}(x_i)$ and $p_{\text{hosp, vacc}}(x_i)$ anchored to `Herrera-Esposito & de los Campos (2022)` + `Verity et al. (2020)` (age IHR), `Ko et al. (2021)` (chronic conditions $\ge 3$ aRR $= 5.0$), modest sex scaling (`Peckham 2020`, `OpenSAFELY 2020`), and `Tenforde et al. (2021)` + `Ferdinands et al. (2022)` vaccine effectiveness (`86%` standard, `80%` high-frailty; unsupported socioeconomic multipliers removed).
 * **Exact Break-Even Threshold:** Send vaccine ($\hat{y}_i = 1$) whenever predicted acceptance probability satisfies:
   $$\hat{p}_i \ge \tau^*(x_i) = \frac{C_v}{C_v + C_h \cdot \big(p_{\text{hosp, unvacc}}(x_i) - p_{\text{hosp, vacc}}(x_i)\big)}$$
-* **Why It Works (Real Test Examples):**
-  * **High-Risk Senior (`ID=4759`, 65+ Male):** `p_unvacc=18.6%`, break-even $\tau^* = 19.7\%$, model $\hat{p} = 29.3\%$ → **Send (`1`)** (naive `0.50` misses `\$6,101` expected hospitalisation savings).
-  * **Low-Risk Young Adult (`ID=4763`, 18–34 Male):** `p_unvacc=1.2%`, break-even $\tau^* = 78.2\%$, model $\hat{p} = 56.1\%$ → **Don't Send (`0`)** (naive `0.50` risks `\$1,500` spoilage for only `\$418` savings).
+* **Why It Works (Real Audited Test Examples):**
+  * **High-Risk Senior (`ID=4759`, 65+ Male, 0 chronic):** `p_unvacc=16.91%`, `p_vacc=3.38%`, break-even $\tau^* = 21.29\%$, model $\hat{p} = 28.57\%$ → **Send (`1`)** (naive `0.50` misses `\$5,546` expected hospitalisation savings).
+  * **Low-Risk Young Adult (`ID=4763`, 18–34 Male, 0 chronic):** `p_unvacc=0.72%`, `p_vacc=0.10%`, break-even $\tau^* = 85.54\%$, model $\hat{p} = 54.16\%$ → **Don't Send (`0`)** (naive `0.50` risks `\$1,500` spoilage for only `\$254` expected savings).
 
 ![Hospitalisation Risk Profile](outputs/figures/03_hospitalisation_risk_profile.png)
 
 ---
 
-## Slide 4: Multi-Model Benchmark (5-Fold Stratified CV)
-* Trained **6 distinct model families** (`LogisticRegression`, `RandomForest`, `HistGradientBoosting`, `LightGBM`, `XGBoost`, `CatBoost`) + out-of-fold logit **`Calibrated_Stack`** over `54` cleaned/engineered features.
-* **`Calibrated_Stack` achieved #1 across every metric:**
-  * **ROC-AUC:** `0.8670` | **LogLoss:** `0.4173` | **Brier Score:** `0.1313`
-  * **Town Cost (OOF):** **`\$15,748,199`** (`\$3,311.23/person`)
-  * **Savings:** **`\$3,578,150`** vs. Treat None (`\$19.33M`), **`\$3,156,806`** vs. Treat All (`\$18.91M`), and **`\$484,349`** extra saved over a naive `0.50` threshold (`\$16.23M`)—capturing **65.7%** of theoretical oracle savings.
+## Slide 4: Multi-Model Benchmark (Leakage-Free Nested 5x4 Stratified CV)
+* Trained **6 distinct model families** (`LogisticRegression`, `RandomForest`, `HistGradientBoosting`, `LightGBM`, `XGBoost`, `CatBoost`) + nested cross-fitted **`Uncalibrated_Stack` / `Calibrated_Stack`** over `49` ablation-validated features (pruning 5 noisy opinion composites).
+* **Nested Stack achieved #1 across every classification & cost metric** (isolated inner calibration confirmed uncalibrated L2 logit stacking needed no Platt/Isotonic warp in 5/5 folds):
+  * **ROC-AUC:** `0.8670` | **LogLoss:** `0.4173` | **Brier:** `0.1313` | **ECE:** `0.0088`
+  * **Town Cost (OOF):** **`\$13,970,808`** (`\$2,937.51/person`, `1,476` allocated, `481` wasted, `559` law payouts, `266.3` expected hospitalisations)
+  * **Savings:** **`\$3,181,524`** vs. Treat None (`\$17.15M`), **`\$3,319,645`** vs. Treat All (`\$17.29M`), and **`\$444,710`** saved over a fixed `0.50` threshold (`\$14.42M`)—capturing **68.2%** of theoretical oracle savings.
 
 ![Model Cost Comparison](outputs/figures/04_model_cost_comparison.png)
 ![Calibration and Threshold Sweep](outputs/figures/05_calibration_and_thresholds.png)
 
 ---
 
-## Slide 5: Explainable AI (SHAP Drivers & Segment Impact)
-* **Top Global Drivers (`mean |SHAP|`):** `health_insurance` (`0.516`), `opinion_eff_x_risk` (`0.407`), `doctor_x_effective` (`0.383`), `doctor_x_risk` (`0.263`), `employment_sector` (`0.160`), `health_worker` (`0.130`), `age_ordinal` (`0.122`).
-* **Allocation Shift Across Ages:** Bayes policy targets **60.8%** of `65+ Years` vs. only **8.6%** of `18–34 Years` on OOF validation.
+## Slide 5: Explainable AI (5-Fold OOF SHAP Stability & Segment Impact)
+* **Top Global Drivers (OOF Mean `|SHAP| ± Fold SD`):** `health_insurance` (`0.533 ± 0.060`), `opinion_covid_risk` (`0.455 ± 0.069`), `doctor_x_effective` (`0.381 ± 0.040`), `opinion_covid_vacc_effective` (`0.292 ± 0.013`), `doctor_x_risk` (`0.256 ± 0.075`), `employment_sector` (`0.164 ± 0.034`, categorical), `age_ordinal` (`0.133 ± 0.022`), `health_worker` (`0.131 ± 0.010`).
+* **Allocation Shift Across Ages:** Bayes policy targets **58.3%** of `65+ Years` vs. only **6.1%** of `18–34 Years` on OOF validation.
 
 ![SHAP Importance](outputs/figures/06_explainability_shap_importance.png)
 ![SHAP Beeswarm](outputs/figures/08_explainability_shap_beeswarm.png)
+![Categorical SHAP Drivers](outputs/figures/08b_explainability_categorical_shap.png)
 ![Cost Savings by Segment](outputs/figures/07_cost_savings_by_segment.png)
 
 ---
 
 ## Slide 6: Robustness Check & Top 5 Canvas Submissions
-* **Cross-Scenario Sensitivity:** Tested `conservative` (`0.5x` risk odds), `base` (`1.0x`), and `severe` (`1.5x`) hospitalisation profiles—`Calibrated_Stack` ranked **#1 in all 3 scenarios** (`59.2%`, `65.7%`, `59.0%` oracle savings captured).
-* **Top 5 Exported Submissions (`submissions/`):**
-  1. `Calibrated_Stack` (`1,679` test vaccines / `35.4%`)
-  2. `XGBoost` (`1,662` / `35.0%`)
-  3. `LightGBM` (`1,663` / `35.0%`)
-  4. `CatBoost` (`1,660` / `35.0%`)
-  5. `RandomForest` (`1,698` / `35.8%`)
+* **Cross-Scenario & VE Sensitivity:** Tested `conservative` (`0.5x`), `base` (`1.0x`), and `severe` (`1.5x`) risk profiles alongside `waned_omicron` (`65%/55%`), `base` (`86%/80%`), `boosted` (`91%/86%`) VE regimes—Bayes policy saved `$140k–$767k` over fixed `0.50` across every single regime, and `Calibrated_Stack` captured **58.4% / 68.2% / 61.9%** of oracle savings across the 3 scenarios.
+* **Top 5 Exported Diverse Submissions (`submissions/`):**
+  1. `Uncalibrated_Stack` (`bayes_exact`, identical to `Calibrated_Stack`, `1,546` test vaccines / `32.6%`)
+  2. `CatBoost` (`bayes_scaled=0.88`, `1,682` / `35.4%`)
+  3. `RandomForest` (`bayes_exact`, `1,495` / `31.5%`)
+  4. `LightGBM` (`bayes_scaled=1.17`, `1,296` / `27.3%`)
+  5. `XGBoost` (`bayes_exact`, `1,503` / `31.6%`)
 
 ![Meta Weights and Sensitivity Matrix](outputs/figures/09_meta_weights_and_sensitivity.png)
 

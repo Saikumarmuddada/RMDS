@@ -1,10 +1,62 @@
 {
   "meta_weights": {
-    "LogisticRegression": 0.30987247119102806,
-    "RandomForest": -0.009486890167722632,
-    "HistGradientBoosting": -0.006116347941088754,
-    "LightGBM": 0.17890220585102362,
-    "XGBoost": 0.1954788362220446,
-    "CatBoost": 0.3555714090758543
-  }
+    "LogisticRegression": 0.3685045760138167,
+    "RandomForest": 0.09438057058005814,
+    "HistGradientBoosting": 0.051249208062940775,
+    "LightGBM": 0.13248731256723484,
+    "XGBoost": 0.17932848329311982,
+    "CatBoost": 0.21500824510651154
+  },
+  "calibration_audit": [
+    {
+      "outer_fold": 0,
+      "best_meta_c": 0.05,
+      "selected_calibrator": "none",
+      "inner_oof_logloss_none": 0.41905966931630745,
+      "inner_oof_logloss_platt": 0.42057666322112963,
+      "inner_oof_logloss_isotonic": 0.430328629578415,
+      "es_fit_rows": 3233,
+      "es_val_rows": 571
+    },
+    {
+      "outer_fold": 1,
+      "best_meta_c": 0.05,
+      "selected_calibrator": "none",
+      "inner_oof_logloss_none": 0.41711710090937265,
+      "inner_oof_logloss_platt": 0.4193046177633915,
+      "inner_oof_logloss_isotonic": 0.42215660801020327,
+      "es_fit_rows": 3234,
+      "es_val_rows": 571
+    },
+    {
+      "outer_fold": 2,
+      "best_meta_c": 0.05,
+      "selected_calibrator": "none",
+      "inner_oof_logloss_none": 0.4227920955237978,
+      "inner_oof_logloss_platt": 0.42429897201436423,
+      "inner_oof_logloss_isotonic": 0.43028757514943705,
+      "es_fit_rows": 3234,
+      "es_val_rows": 571
+    },
+    {
+      "outer_fold": 3,
+      "best_meta_c": 0.05,
+      "selected_calibrator": "none",
+      "inner_oof_logloss_none": 0.4167562890871047,
+      "inner_oof_logloss_platt": 0.41759026724364867,
+      "inner_oof_logloss_isotonic": 0.42192396098896995,
+      "es_fit_rows": 3234,
+      "es_val_rows": 571
+    },
+    {
+      "outer_fold": 4,
+      "best_meta_c": 0.05,
+      "selected_calibrator": "none",
+      "inner_oof_logloss_none": 0.41848386402429855,
+      "inner_oof_logloss_platt": 0.41966708459570456,
+      "inner_oof_logloss_isotonic": 0.42568593516032405,
+      "es_fit_rows": 3234,
+      "es_val_rows": 571
+    }
+  ]
 }

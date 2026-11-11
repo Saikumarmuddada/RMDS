@@ -14,11 +14,11 @@ This document serves two purposes:
 | :--- | :--- | :--- |
 | **Data exploration** (by 16:00) | Implemented | `src/eda.py` computes target rates, train/test missingness, Pearson correlations, subgroup rates, and Figures `01`–`03`. |
 | **Pre-processing** (by 16:00) | Implemented | `src/data_prep.py` cleans `"MSA, Not Principle  City"` whitespace, converts undocumented `0`s in 1–5 opinion scales to `NaN` + `_is_zero` flags, creates `_is_missing` flags, and `src/modeling.py` runs fold-safe imputation/scaling/encoding. |
-| **Modelling** (by 16:00) | Implemented | `src/modeling.py` trains 6 diverse models (`LogisticRegression`, `RandomForest`, `HistGradientBoosting`, `LightGBM`, `XGBoost`, `CatBoost`) + `Calibrated_Stack` using 5-fold Stratified CV. |
-| **Performance analysis** (by 16:00) | Implemented | Evaluates ROC-AUC, LogLoss, Brier, Accuracy, F1, naive `0.50` cost, global-tuned cost, Bayes-exact cost, Bayes-scaled cost, and 3 risk sensitivity scenarios (`outputs/model_comparison.csv`, `outputs/sensitivity_matrix.csv`). |
+| **Modelling** (by 16:00) | Implemented | `src/modeling.py` trains 6 diverse models (`LogisticRegression`, `RandomForest`, `HistGradientBoosting`, `LightGBM`, `XGBoost`, `CatBoost`) + leakage-free nested 5x4 cross-fitted `Calibrated_Stack` & `Uncalibrated_Stack`. |
+| **Performance analysis** (by 16:00) | Implemented | Evaluates ROC-AUC, LogLoss, Brier, ECE, Accuracy, F1, naive `0.50` cost, global-tuned cost, Bayes-exact cost, Bayes-scaled cost, and 9 IHR x VE x Sex sensitivity cells (`outputs/model_comparison.csv`, `outputs/sensitivity_matrix.csv`, `outputs/ve_and_risk_sensitivity_grid.csv`). |
 | **Submission of results** (best 5 files matching `dataset_X_example_submission.csv`, named `challenge_submission_group_X_order_Y`) | Implemented (Placeholder Group `0`) | `submissions/challenge_submission_group_0_order_1.csv` to `order_5.csv` match exact `respondent_id` ordering and columns. **Team action:** Re-run `.venv\Scripts\python.exe main.py --group <YOUR_GROUP_NUMBER>` before uploading to Canvas by 16:00. |
-| **Code presentation and Documentation** | Implemented | `README.md`, `outputs/hackathon_report.md`, `PROJECT_GUIDE.md`, and `notebooks/RMDS_Hackathon_Dataset_C.ipynb`. |
-| **Explainable AI** (after hackathon / started here) | Implemented | `src/explainability.py` computes LightGBM TreeExplainer SHAP values (`outputs/shap_feature_importance.csv`), bar chart (`06`), directional beeswarm plot (`08`), and meta-learner blend weights (`09`). |
+| **Code presentation and Documentation** | Implemented | `README.md`, `outputs/hackathon_report.md`, `TECHNICAL_AUDIT_REPORT.md`, `PROJECT_GUIDE.md`, and `notebooks/RMDS_Hackathon_Dataset_C.ipynb`. |
+| **Explainable AI** (after hackathon / started here) | Implemented | `src/explainability.py` computes 5-fold OOF LightGBM TreeExplainer SHAP values with stability SD (`outputs/shap_feature_importance.csv`), bar chart (`06`), numeric-only beeswarm (`08`), categorical drivers (`08b`), and meta-learner log-odds coefficients (`09`). |
 | **Figure embellishment** (after hackathon / started here) | Implemented | 9 publication-style seaborn/matplotlib charts saved in `outputs/figures/` (`01` through `09`). |
 | **Presentation** (after hackathon) | Ready to build | Figures `01`–`09` and `outputs/hackathon_report.md` provide ready-to-paste metrics and charts. **Team action:** Put together your slide deck. |
 | **Colab & GitHub commits** (visible individual coding/analysis contributions) | Ready / User Action | Colab-ready notebook created at `notebooks/RMDS_Hackathon_Dataset_C.ipynb`. Git repo is initialized on `main` with no commits yet — **Team action:** commit/push your team's work to GitHub and share code links on Canvas. |
@@ -31,8 +31,8 @@ This document serves two purposes:
 | **100% infection assumption (winter indoor parties)** | Implemented | `estimate_hospitalisation_probabilities()` models hospitalisation probability conditional on infection (`P(hosp | infected, features, vacc_status)`). |
 | **Local law: if someone wants a vaccine and none is available, town pays vaccine cost** | Implemented | `law_penalty_cost = sum((y_pred == 0) & (y_true == 1)) * vaccine_cost`. |
 | **Spoilage: vaccines mailed home are ruined if unused** | Implemented | `vaccine_send_cost = sum(y_pred == 1) * vaccine_cost`; models predict individual `0`/`1` acceptance rather than just aggregate counts. |
-| **Estimate hospitalisation probability from dataset factors + vaccination status** | Implemented | Incorporates `age_group`, `number_chronic_med_conditions`, `sex`, `health_insurance`, `income_poverty`, and vaccine efficacy (`85%` baseline, `80%` for `65+` or `>=2` chronic conditions). |
-| **Use Generative AI for hospitalisation probability estimation & check robustness across AIs/perspectives** | Implemented + Optional Team Check | Tested 3 risk calibration profiles (`conservative` `0.5x`, `base` `1.0x`, `severe` `1.5x` odds) in `outputs/sensitivity_matrix.csv`. **Optional team check:** Ask a second AI or team member for alternative hospitalisation rates and plug them into `BASE_AGE_IHR` in `src/cost_model.py` if desired. |
+| **Estimate hospitalisation probability from dataset factors + vaccination status** | Implemented | Incorporates peer-reviewed age IHR (`Herrera-Esposito 2022`, `Verity 2020`), chronic conditions (`Ko 2021`, capped `>=3` aRR `5.0`), sex (`OR=1.45`), and vaccine effectiveness (`Tenforde 2021`, `Ferdinands 2022`: `86%` standard, `80%` high-frailty); excludes uncalibrated socioeconomic multipliers. |
+| **Use Generative AI for hospitalisation probability estimation & check robustness across AIs/perspectives** | Implemented + Optional Team Check | Tested 3 risk calibration profiles (`conservative` `0.5x`, `base` `1.0x`, `severe` `1.5x` odds) x 3 VE regimes (`waned_omicron`, `base`, `boosted`) + sex-neutral sensitivity in `outputs/sensitivity_matrix.csv` and `outputs/ve_and_risk_sensitivity_grid.csv`. |
 
 ### C. Dataset Specs (`Images/Dataset C.jpeg`, `Images/Dataset C2.jpeg`, `DOCs/Dataset B Information.pdf`)
 
@@ -59,26 +59,26 @@ Operational/conduct rules for participants (own laptops only, silent phones, no 
    * Normalized whitespace in categorical strings (`"MSA, Not Principle  City"` -> `"MSA, Not Principle City"`).
    * Flagged undocumented `0`s in `opinion_covid_vacc_effective` and `opinion_covid_risk` (`*_is_zero`) and replaced `0` with `NaN` so ordinal calculations are undistorted.
    * Created missingness indicators (`health_insurance_is_missing`, `employment_sector_is_missing`, `income_poverty_is_missing`, `rent_or_own_is_missing`, `row_missing_count`).
-   * Engineered ordinal mappings (`age_ordinal`, `education_ordinal`, `income_ordinal`), behavioral totals (`behavioral_sum`, `behavioral_mean`), attitude balances (`opinion_net_benefit`, `opinion_risk_minus_worry`, `opinion_pro_vaccine_index`, `opinion_eff_x_risk`), doctor interactions (`doctor_x_effective`, `doctor_x_risk`, `doctor_x_not_worried`), and vulnerability flags (`has_chronic_condition`, `high_risk_elderly`, `is_healthcare_sector`).
+   * Engineered ordinal mappings (`age_ordinal`, `education_ordinal`, `income_ordinal`), behavioral totals (`behavioral_sum`, `behavioral_mean`), doctor interactions (`doctor_x_effective`, `doctor_x_risk`, `doctor_x_not_worried`), and vulnerability flags (`household_total`, `has_chronic_condition`, `high_risk_elderly`, `is_healthcare_sector`, `uninsured_flag`) — validated via CV ablation (`outputs/feature_ablation_report.csv`, pruning 5 collinear opinion composites to `49` features).
 
 3. **Hospitalisation Cost Model & Bayes Thresholding (`src/cost_model.py`)**
-   * Formulated the exact town cost matrix combining `$1,500` vaccine spend/penalty and `$41,000` expected hospitalisation cost.
+   * Formulated the exact town cost matrix combining `$1,500` vaccine spend/penalty and `$41,000` expected hospitalisation cost with edge-case guards (`VE <= 0`, `NaN`/out-of-range inputs, `C_v = 0`).
    * Derived the per-person break-even threshold:
      $$\tau^*(x_i) = \frac{C_v}{C_v + C_h \cdot \big(p_{\text{hosp, unvacc}}(x_i) - p_{\text{hosp, vacc}}(x_i)\big)}$$
    * Compared 4 thresholding strategies using leak-free 5-fold CV: fixed `0.50`, nested-CV tuned global threshold, analytical Bayes-exact (`tau*(x_i)`), and nested-CV scaled Bayes.
 
-4. **Multi-Model Training & Calibrated Stacking (`src/modeling.py`)**
-   * Trained 6 distinct model families inside a shared 5-fold Stratified CV (`RANDOM_SEED = 42`): `LogisticRegression`, `RandomForest`, `HistGradientBoosting`, `LightGBM`, `XGBoost`, and `CatBoost`.
-   * Combined out-of-fold log-odds predictions using an L2-regularized logistic meta-learner (`Calibrated_Stack`) inside the same folds to prevent leakage.
-   * Ranked models by Bayes-exact OOF town cost (`Calibrated_Stack` achieved the best ROC-AUC `0.8670`, lowest LogLoss `0.4173`, lowest Brier `0.1313`, and lowest town cost `\$15,748,199`, capturing `65.7%` of theoretical oracle savings).
+4. **Multi-Model Training & Nested Cross-Fitted Stacking (`src/modeling.py`)**
+   * Trained 6 distinct model families inside a leakage-free nested 5-fold outer / 4-fold inner Stratified CV (`RANDOM_SEED = 42`) with internal `85%/15%` early stopping inside active training folds only.
+   * Built strictly uncontaminated inner OOF logit predictions for `Uncalibrated_Stack` and `Calibrated_Stack` (selecting `C = 0.05` and verifying calibration out-of-sample across `none`, `platt`, `isotonic` — selecting `none` across all 5 folds).
+   * Ranked models by Bayes-exact OOF town cost (`Calibrated_Stack` / `Uncalibrated_Stack` achieved #1 ROC-AUC `0.8670`, lowest LogLoss `0.4173`, lowest Brier `0.1313`, lowest ECE `0.0088`, and lowest town cost `\$13,970,808`, capturing `68.2%` of theoretical oracle savings).
 
 5. **Explainable AI & Embellished Visuals (`src/explainability.py`)**
-   * Computed SHAP values with `shap.TreeExplainer` on LightGBM validation data (`outputs/shap_feature_importance.csv`).
-   * Generated 9 figures (`outputs/figures/01_*.png` through `09_*.png`) covering EDA, risk profiles, calibration, threshold curves, SHAP bar + directional beeswarm plots, segment-level savings, stack meta-weights, and cross-scenario sensitivity.
+   * Computed out-of-fold SHAP values across all 5 outer LightGBM fold models (`outputs/shap_feature_importance.csv` with fold SD stability).
+   * Generated 10 figures (`outputs/figures/01_*.png` through `09_*.png` + `08b`) separating numeric beeswarm (`08`) from true categorical subgroup SHAP (`08b`) and labeling meta-learner log-odds coefficients (`09`).
 
 6. **Submission Export & Automated Testing (`src/modeling.py`, `tests/test_pipeline.py`)**
-   * Exported the top 5 diverse models (`Calibrated_Stack`, `XGBoost`, `LightGBM`, `CatBoost`, `RandomForest`) into `submissions/challenge_submission_group_<X>_order_<1..5>.csv` verified against `dataset_C_example_submission.csv`.
-   * Built `pytest` unit tests covering data cleaning, risk monotonicity, exact town cost cases, Bayes math, and submission schema alignment.
+   * Exported the top 5 diverse model families (`Uncalibrated_Stack` [= `Calibrated_Stack`], `CatBoost`, `RandomForest`, `LightGBM`, `XGBoost`) into `submissions/challenge_submission_group_<X>_order_<1..5>.csv` verified against `dataset_C_example_submission.csv`.
+   * Built 11 `pytest` tests covering data cleaning, zero leakage, outer validation isolation, calibration/ECE, scientific risk constraints, exact cost math, edge cases (`VE <= 0`, `NaN`), multi-fold SHAP, and submission schema alignment.
 
 ---
 
@@ -106,7 +106,7 @@ Operational/conduct rules for participants (own laptops only, silent phones, no 
 
 ### Notebook, Tests & Documentation
 * `notebooks/RMDS_Hackathon_Dataset_C.ipynb` — Google Colab & Jupyter-ready 7-cell interactive walkthrough invoking the `src/` modules.
-* `tests/test_pipeline.py` — 5 `pytest` unit tests validating data cleaning, risk monotonicity, cost rules, Bayes threshold math, and generated submission schemas.
+* `tests/test_pipeline.py` — 11 `pytest` automated tests validating preprocessing, determinism, zero target/outer-validation leakage, calibration/ECE, literature-grounded risk constraints, exact cost math & edge cases, multi-fold SHAP, and generated submission schemas.
 * `requirements.txt` — Pinned minimum Python package dependencies (`numpy`, `pandas`, `scikit-learn`, `lightgbm`, `xgboost`, `catboost`, `matplotlib`, `seaborn`, `shap`, `nbformat`, `pytest`).
 * `.gitignore` — Excludes `.venv/`, `__pycache__/`, `.pytest_cache/`, checkpoints, and OS/IDE artifacts from Git.
 * `README.md` — Concise quick-start and structure overview.
