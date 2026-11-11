@@ -1,0 +1,273 @@
+{
+  "train_rows": 4756,
+  "test_rows": 4749,
+  "raw_feature_count": 29,
+  "engineered_feature_count": 54,
+  "target_positive_count": 1554,
+  "target_negative_count": 3202,
+  "target_positive_rate": 0.3267451640033642,
+  "top_missing_features": [
+    {
+      "feature": "employment_sector",
+      "train_missing_pct": 48.99074852817494,
+      "test_missing_pct": 50.64224047167825
+    },
+    {
+      "feature": "health_insurance",
+      "train_missing_pct": 40.11774600504626,
+      "test_missing_pct": 41.73510212676353
+    },
+    {
+      "feature": "income_poverty",
+      "train_missing_pct": 15.727502102607232,
+      "test_missing_pct": 16.782480522215202
+    },
+    {
+      "feature": "rent_or_own",
+      "train_missing_pct": 6.9175777964676195,
+      "test_missing_pct": 7.9806275005264276
+    },
+    {
+      "feature": "employment_status",
+      "train_missing_pct": 5.004205214465938,
+      "test_missing_pct": 5.832806906717203
+    },
+    {
+      "feature": "marital_status",
+      "train_missing_pct": 4.857022708158116,
+      "test_missing_pct": 5.664350389555696
+    },
+    {
+      "feature": "education",
+      "train_missing_pct": 4.79394449116905,
+      "test_missing_pct": 5.664350389555696
+    },
+    {
+      "feature": "child_under_6_months",
+      "train_missing_pct": 2.83851976450799,
+      "test_missing_pct": 3.2638450200042115
+    }
+  ],
+  "top_target_correlations": [
+    {
+      "feature": "doctor_x_effective",
+      "corr": 0.4503455590253572
+    },
+    {
+      "feature": "doctor_x_risk",
+      "corr": 0.44825899960868665
+    },
+    {
+      "feature": "doctor_recc_covid",
+      "corr": 0.43037502505901337
+    },
+    {
+      "feature": "opinion_eff_x_risk",
+      "corr": 0.42661023581548685
+    },
+    {
+      "feature": "doctor_x_not_worried",
+      "corr": 0.3965679127795311
+    },
+    {
+      "feature": "opinion_covid_risk",
+      "corr": 0.3789833951490127
+    },
+    {
+      "feature": "opinion_pro_vaccine_index",
+      "corr": 0.35383949389107794
+    },
+    {
+      "feature": "opinion_covid_vacc_effective",
+      "corr": 0.31127482852884303
+    },
+    {
+      "feature": "opinion_risk_minus_worry",
+      "corr": 0.27398482337721186
+    },
+    {
+      "feature": "health_insurance_is_missing",
+      "corr": -0.26838032519391103
+    },
+    {
+      "feature": "concern_x_knowledge",
+      "corr": 0.19966734384683618
+    },
+    {
+      "feature": "health_worker",
+      "corr": 0.1971991457941232
+    }
+  ],
+  "mean_estimated_unvacc_hosp_prob": 0.08715742226987543,
+  "mean_estimated_vacc_hosp_prob": 0.015904803691353362,
+  "subgroup_rates": {
+    "doctor_recc_covid": {
+      "0": {
+        "count": 3674,
+        "vaccine_rate": 0.21720195971692977
+      },
+      "1": {
+        "count": 1082,
+        "vaccine_rate": 0.6987060998151571
+      }
+    },
+    "opinion_covid_vacc_effective": {
+      "0": {
+        "count": 92,
+        "vaccine_rate": 0.25
+      },
+      "1": {
+        "count": 124,
+        "vaccine_rate": 0.03225806451612903
+      },
+      "2": {
+        "count": 241,
+        "vaccine_rate": 0.1037344398340249
+      },
+      "3": {
+        "count": 772,
+        "vaccine_rate": 0.16191709844559585
+      },
+      "4": {
+        "count": 2425,
+        "vaccine_rate": 0.3047422680412371
+      },
+      "5": {
+        "count": 1102,
+        "vaccine_rate": 0.5789473684210527
+      }
+    },
+    "opinion_covid_risk": {
+      "0": {
+        "count": 96,
+        "vaccine_rate": 0.2708333333333333
+      },
+      "1": {
+        "count": 1196,
+        "vaccine_rate": 0.1245819397993311
+      },
+      "2": {
+        "count": 1228,
+        "vaccine_rate": 0.23452768729641693
+      },
+      "3": {
+        "count": 982,
+        "vaccine_rate": 0.3543788187372709
+      },
+      "4": {
+        "count": 1029,
+        "vaccine_rate": 0.5724003887269193
+      },
+      "5": {
+        "count": 225,
+        "vaccine_rate": 0.6844444444444444
+      }
+    },
+    "opinion_covid_sick_from_vacc": {
+      "1.0": {
+        "count": 2115,
+        "vaccine_rate": 0.3446808510638298
+      },
+      "2.0": {
+        "count": 1358,
+        "vaccine_rate": 0.2709867452135493
+      },
+      "3.0": {
+        "count": 10,
+        "vaccine_rate": 0.0
+      },
+      "4.0": {
+        "count": 876,
+        "vaccine_rate": 0.3698630136986301
+      },
+      "5.0": {
+        "count": 307,
+        "vaccine_rate": 0.3517915309446254
+      },
+      "Missing": {
+        "count": 90,
+        "vaccine_rate": 0.2777777777777778
+      }
+    },
+    "age_group": {
+      "18 - 34 Years": {
+        "count": 947,
+        "vaccine_rate": 0.2576557550158395
+      },
+      "35 - 44 Years": {
+        "count": 661,
+        "vaccine_rate": 0.2950075642965204
+      },
+      "45 - 54 Years": {
+        "count": 948,
+        "vaccine_rate": 0.31223628691983124
+      },
+      "55 - 64 Years": {
+        "count": 992,
+        "vaccine_rate": 0.3558467741935484
+      },
+      "65+ Years": {
+        "count": 1208,
+        "vaccine_rate": 0.38576158940397354
+      }
+    },
+    "health_worker": {
+      "0.0": {
+        "count": 3980,
+        "vaccine_rate": 0.2914572864321608
+      },
+      "1.0": {
+        "count": 644,
+        "vaccine_rate": 0.5590062111801242
+      },
+      "Missing": {
+        "count": 132,
+        "vaccine_rate": 0.25757575757575757
+      }
+    },
+    "number_chronic_med_conditions": {
+      "0": {
+        "count": 3354,
+        "vaccine_rate": 0.2889087656529517
+      },
+      "1": {
+        "count": 1083,
+        "vaccine_rate": 0.4090489381348107
+      },
+      "2": {
+        "count": 249,
+        "vaccine_rate": 0.46184738955823296
+      },
+      "3": {
+        "count": 58,
+        "vaccine_rate": 0.3448275862068966
+      },
+      "4": {
+        "count": 10,
+        "vaccine_rate": 0.6
+      },
+      "5": {
+        "count": 1,
+        "vaccine_rate": 1.0
+      },
+      "6": {
+        "count": 1,
+        "vaccine_rate": 0.0
+      }
+    },
+    "health_insurance": {
+      "0.0": {
+        "count": 304,
+        "vaccine_rate": 0.19407894736842105
+      },
+      "1.0": {
+        "count": 2544,
+        "vaccine_rate": 0.45794025157232704
+      },
+      "Missing": {
+        "count": 1908,
+        "vaccine_rate": 0.17295597484276728
+      }
+    }
+  }
+}

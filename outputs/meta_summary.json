@@ -1,0 +1,10 @@
+{
+  "meta_weights": {
+    "LogisticRegression": 0.30987247119103956,
+    "RandomForest": -0.009486890167723213,
+    "HistGradientBoosting": -0.006116347941073996,
+    "LightGBM": 0.17890220585098052,
+    "XGBoost": 0.1954788362220485,
+    "CatBoost": 0.3555714090758701
+  }
+}
