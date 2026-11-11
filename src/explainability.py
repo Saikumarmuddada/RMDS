@@ -16,8 +16,13 @@ import shap
 from sklearn.calibration import calibration_curve
 
 from src.config import DATASET_C_CONFIG, DatasetConfig, FIGURES_DIR, OUTPUT_DIR
-from src.cost_model import compute_town_cost, estimate_hospitalisation_probabilities, predict_with_cost_policy
-from src.modeling import ModelRunResult, _prepare_category_frames
+from src.cost_model import (
+    compute_town_cost,
+    estimate_hospitalisation_probabilities,
+    evaluate_cost_sensitivity_grid,
+    predict_with_cost_policy,
+)
+from src.modeling import ModelRunResult, apply_category_vocab
 
 
 sns.set_theme(style="whitegrid", context="notebook")
@@ -145,19 +150,32 @@ def _plot_calibration_and_thresholds(
     pu, pv = estimate_hospitalisation_probabilities(feat_train, scenario="base")
     best_res = min(results, key=lambda r: r.policy_results["bayes_exact"]["breakdown"].total_cost)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+    fig, axes = plt.subplots(1, 2, figsize=(14.5, 5.8))
 
+    display_models = {
+        "LogisticRegression",
+        "LightGBM",
+        "XGBoost",
+        "CatBoost",
+        "Uncalibrated_Stack",
+        "Calibrated_Stack",
+    }
     for r in results:
-        if r.name in {"LogisticRegression", "RandomForest", "LightGBM", "CatBoost", "Calibrated_Stack"}:
+        if r.name in display_models:
             frac_pos, mean_pred = calibration_curve(y, r.oof_probs, n_bins=10, strategy="quantile")
-            axes[0].plot(mean_pred, frac_pos, marker="o", linewidth=1.8, label=f"{r.name} (Brier={r.brier:.4f})")
+            axes[0].plot(
+                mean_pred,
+                frac_pos,
+                marker="o",
+                linewidth=1.8,
+                label=f"{r.name} (Brier={r.brier:.4f}, ECE={r.ece:.4f})",
+            )
     axes[0].plot([0, 1], [0, 1], "k--", label="Perfect Calibration")
     axes[0].set_xlabel("Predicted Probability P(covid_vaccine = 1)")
     axes[0].set_ylabel("Observed Acceptance Fraction")
-    axes[0].set_title("Probability Calibration Curves (5-Fold OOF)", fontsize=12.5, fontweight="bold")
-    axes[0].legend(fontsize=8.5)
+    axes[0].set_title("Out-of-Fold Probability Calibration Curves (ECE & Brier)", fontsize=12.5, fontweight="bold")
+    axes[0].legend(fontsize=8.0)
 
-    # Sweep global threshold vs cost and compare to Bayes-exact line
     thresholds = np.linspace(0.05, 0.95, 91)
     costs = [
         compute_town_cost(
@@ -179,6 +197,16 @@ def _plot_calibration_and_thresholds(
     plt.close(fig)
 
 
+def _extract_positive_class_shap(raw_shap) -> np.ndarray:
+    """Normalize SHAP output across versions into a 2D array (n_samples, n_features)."""
+    if isinstance(raw_shap, list):
+        return np.asarray(raw_shap[1], dtype=np.float64)
+    arr = np.asarray(raw_shap, dtype=np.float64)
+    if arr.ndim == 3 and arr.shape[-1] == 2:
+        return arr[:, :, 1]
+    return arr
+
+
 def _compute_and_plot_shap(
     feat_train: pd.DataFrame,
     feat_test: pd.DataFrame,
@@ -186,50 +214,150 @@ def _compute_and_plot_shap(
     figures_dir: Path,
     output_dir: Path,
 ) -> pd.DataFrame:
-    feature_cols = artifacts["feature_cols"]
-    cat_cols = artifacts["cat_cols"]
-    lgbm_model = artifacts["lgbm_models"][0]
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    feature_cols: List[str] = artifacts["feature_cols"]
+    num_cols: List[str] = artifacts["num_cols"]
+    cat_cols: List[str] = artifacts["cat_cols"]
+    cat_set = set(cat_cols)
+    lgbm_models = artifacts["lgbm_models"]
+    lgbm_fold_vocabs = artifacts.get("lgbm_fold_vocabs")
     folds = artifacts["folds"]
+    unique_folds = sorted(np.unique(folds).tolist())
 
-    val_mask = folds == 0
-    X_tr = feat_train.loc[~val_mask, feature_cols]
-    X_va = feat_train.loc[val_mask, feature_cols]
-    X_te = feat_test[feature_cols]
-    _, X_va_cat, _ = _prepare_category_frames(X_tr, X_va, X_te, cat_cols, for_catboost=False)
+    # Out-of-fold SHAP matrix across ALL outer folds (never fitted and explained on same fold)
+    oof_shap = np.zeros((len(feat_train), len(feature_cols)), dtype=np.float64)
+    fold_mean_abs = np.zeros((len(unique_folds), len(feature_cols)), dtype=np.float64)
 
-    explainer = shap.TreeExplainer(lgbm_model)
-    shap_values = explainer.shap_values(X_va_cat)
-    if isinstance(shap_values, list):
-        shap_vals = shap_values[1]
-    else:
-        shap_vals = shap_values
+    for idx_pos, f_id in enumerate(unique_folds):
+        val_mask = folds == f_id
+        X_va = feat_train.loc[val_mask, feature_cols]
+        if lgbm_fold_vocabs and idx_pos < len(lgbm_fold_vocabs):
+            X_va_cat = apply_category_vocab(X_va, lgbm_fold_vocabs[idx_pos], for_catboost=False)
+        else:
+            X_tr = feat_train.loc[~val_mask, feature_cols]
+            vocabs = {}
+            for col in cat_cols:
+                vals = X_tr[col].astype("string").str.strip().dropna().unique()
+                vocabs[col] = pd.Index(vals).union(pd.Index(["Missing"])).sort_values()
+            X_va_cat = apply_category_vocab(X_va, vocabs, for_catboost=False)
 
-    mean_abs_shap = np.abs(shap_vals).mean(axis=0)
-    shap_df = pd.DataFrame(
-        {"feature": feature_cols, "mean_abs_shap": mean_abs_shap}
-    ).sort_values("mean_abs_shap", ascending=False)
+        explainer = shap.TreeExplainer(lgbm_models[idx_pos])
+        sv = _extract_positive_class_shap(explainer.shap_values(X_va_cat))
+        oof_shap[val_mask, :] = sv
+        fold_mean_abs[idx_pos, :] = np.abs(sv).mean(axis=0)
+
+    overall_mean_abs = np.abs(oof_shap).mean(axis=0)
+    fold_mean = fold_mean_abs.mean(axis=0)
+    fold_std = fold_mean_abs.std(axis=0, ddof=1) if len(unique_folds) > 1 else np.zeros_like(fold_mean)
+
+    # Fold rank stability
+    fold_ranks = np.argsort(np.argsort(-fold_mean_abs, axis=1), axis=1) + 1
+    mean_rank = fold_ranks.mean(axis=0)
+    std_rank = fold_ranks.std(axis=0, ddof=1) if len(unique_folds) > 1 else np.zeros_like(mean_rank)
+
+    shap_data = {
+        "feature": feature_cols,
+        "feature_type": ["categorical" if c in cat_set else "numeric" for c in feature_cols],
+        "mean_abs_shap": overall_mean_abs,
+        "fold_mean_abs_shap": fold_mean,
+        "fold_std_abs_shap": fold_std,
+        "mean_rank": mean_rank,
+        "std_rank": std_rank,
+    }
+    for idx_pos, f_id in enumerate(unique_folds):
+        shap_data[f"fold_{f_id}_mean_abs_shap"] = fold_mean_abs[idx_pos]
+
+    shap_df = pd.DataFrame(shap_data).sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
     shap_df.to_csv(output_dir / "shap_feature_importance.csv", index=False)
 
+    # 1. Global SHAP Importance with across-fold SD error bars & Numeric/Categorical color key
     top_18 = shap_df.head(18).iloc[::-1]
-    fig, ax = plt.subplots(figsize=(10, 7))
-    ax.barh(top_18["feature"], top_18["mean_abs_shap"], color="#3D5A80", edgecolor="black", linewidth=0.6)
-    ax.set_xlabel("Mean |SHAP Value| (Impact on Log-Odds of Vaccine Acceptance)")
-    ax.set_title("Explainable AI: Top 18 Drivers of COVID-19 Vaccine Acceptance (LightGBM SHAP)", fontsize=12.5, fontweight="bold")
+    type_colors = [
+        "#E07A5F" if ft == "categorical" else "#3D5A80"
+        for ft in top_18["feature_type"]
+    ]
+    fig, ax = plt.subplots(figsize=(10.5, 7.2))
+    ax.barh(
+        top_18["feature"],
+        top_18["mean_abs_shap"],
+        xerr=top_18["fold_std_abs_shap"],
+        capsize=3,
+        color=type_colors,
+        edgecolor="black",
+        linewidth=0.6,
+        alpha=0.92,
+    )
+    from matplotlib.patches import Patch
+
+    ax.legend(
+        handles=[
+            Patch(facecolor="#3D5A80", edgecolor="black", label="Numeric / Ordinal / Binary"),
+            Patch(facecolor="#E07A5F", edgecolor="black", label="Nominal Categorical"),
+        ],
+        loc="lower right",
+    )
+    ax.set_xlabel("Out-of-Fold Mean |SHAP Value| ± 1 Fold SD (Impact on Acceptance Log-Odds)")
+    ax.set_title(
+        "Explainable AI: Multi-Fold OOF LightGBM SHAP Importance & Stability",
+        fontsize=12.5,
+        fontweight="bold",
+    )
     plt.tight_layout()
     plt.savefig(figures_dir / "06_explainability_shap_importance.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-    # Directional SHAP beeswarm plot (convert categoricals to numeric codes only for dot coloring)
-    X_va_disp = X_va_cat.copy()
-    for col in cat_cols:
-        X_va_disp[col] = X_va_disp[col].cat.codes.replace(-1, np.nan).astype(float)
+    # 2. Numeric-ONLY Directional SHAP Beeswarm (never map categorical strings to integer codes)
+    num_indices = [feature_cols.index(c) for c in num_cols]
+    if num_indices:
+        X_num_oof = feat_train[num_cols].apply(pd.to_numeric, errors="coerce")
+        oof_shap_num = oof_shap[:, num_indices]
+        plt.figure(figsize=(11, 7.5))
+        shap.summary_plot(oof_shap_num, X_num_oof, max_display=16, show=False)
+        plt.title(
+            "Explainable AI: Numeric & Ordinal Feature SHAP Beeswarm (All Outer OOF Folds)",
+            fontsize=12.5,
+            fontweight="bold",
+        )
+        plt.tight_layout()
+        plt.savefig(figures_dir / "08_explainability_shap_beeswarm.png", dpi=180, bbox_inches="tight")
+        plt.close()
 
-    plt.figure(figsize=(11, 7.5))
-    shap.summary_plot(shap_vals, X_va_disp, max_display=16, show=False)
-    plt.title("Explainable AI: SHAP Directional Impact (Red = Higher Feature Value)", fontsize=12.5, fontweight="bold")
-    plt.tight_layout()
-    plt.savefig(figures_dir / "08_explainability_shap_beeswarm.png", dpi=180, bbox_inches="tight")
-    plt.close()
+    # 3. Separate Categorical Feature Level SHAP Visualization (true category labels, no .cat.codes!)
+    cat_top = (
+        shap_df[shap_df["feature_type"] == "categorical"]
+        .head(4)["feature"]
+        .tolist()
+    )
+    if cat_top:
+        fig, axes = plt.subplots(len(cat_top), 1, figsize=(11, 3.2 * len(cat_top)))
+        if len(cat_top) == 1:
+            axes = [axes]
+        for ax_c, col in zip(axes, cat_top):
+            c_idx = feature_cols.index(col)
+            tmp = pd.DataFrame(
+                {
+                    "category": feat_train[col].astype("string").str.strip().fillna("Missing"),
+                    "shap_value": oof_shap[:, c_idx],
+                }
+            )
+            cat_stats = (
+                tmp.groupby("category", as_index=False)["shap_value"]
+                .agg(["mean", "count"])
+                .sort_values("mean")
+            )
+            # Keep top/bottom categories if high cardinality
+            if len(cat_stats) > 10:
+                cat_stats = cat_stats.sort_values("count", ascending=False).head(10).sort_values("mean")
+            bar_cols = ["#2EC4B6" if v >= 0 else "#E63946" for v in cat_stats["mean"]]
+            labels = [f"{cat} (n={int(cnt)})" for cat, cnt in zip(cat_stats["category"], cat_stats["count"])]
+            ax_c.barh(labels, cat_stats["mean"], color=bar_cols, edgecolor="black", linewidth=0.5)
+            ax_c.axvline(0.0, color="black", linewidth=0.8)
+            ax_c.set_title(f"Categorical Driver `{col}`: Mean OOF SHAP by Category", fontsize=11, fontweight="bold")
+            ax_c.set_xlabel("Mean Signed SHAP Value (Log-Odds Contribution)")
+        plt.tight_layout()
+        plt.savefig(figures_dir / "08b_explainability_categorical_shap.png", dpi=180, bbox_inches="tight")
+        plt.close(fig)
 
     return shap_df
 
@@ -328,15 +456,24 @@ def _plot_meta_weights_and_sensitivity(
     sens_df = pd.DataFrame(sens_rows)
     sens_df.to_csv(output_dir / "sensitivity_matrix.csv", index=False)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5.4))
     meta_weights = artifacts.get("meta_weights", {})
     if meta_weights:
-        mw = pd.Series(meta_weights).sort_values()
+        mw = pd.Series(meta_weights)
+        meta_per_fold = artifacts.get("meta_coefs_per_fold")
+        if meta_per_fold is not None:
+            coef_arr = np.asarray(meta_per_fold, dtype=np.float64)
+            std_s = pd.Series(coef_arr.std(axis=0, ddof=1), index=list(meta_weights.keys())) if coef_arr.shape[0] > 1 else pd.Series(0.0, index=mw.index)
+        else:
+            std_s = pd.Series(0.0, index=mw.index)
+        order_idx = mw.sort_values().index
+        mw = mw.loc[order_idx]
+        std_s = std_s.loc[order_idx]
         colors = ["#2EC4B6" if v >= 0 else "#E63946" for v in mw.values]
-        axes[0].barh(mw.index, mw.values, color=colors, edgecolor="black", linewidth=0.6)
+        axes[0].barh(mw.index, mw.values, xerr=std_s.values, capsize=3, color=colors, edgecolor="black", linewidth=0.6)
         axes[0].axvline(0, color="black", linewidth=0.8)
-        axes[0].set_xlabel("Log-Odds Meta-Learner Coefficient")
-        axes[0].set_title("Calibrated Stack Blend Weights", fontsize=12.5, fontweight="bold")
+        axes[0].set_xlabel("Meta-Learner Logistic Regression Log-Odds Coefficient (± 1 Fold SD)")
+        axes[0].set_title("Meta-Learner Logistic Regression Coefficients (Log-Odds)", fontsize=12.2, fontweight="bold")
 
     piv = sens_df.pivot(index="model", columns="scenario", values="captured_oracle_pct")[
         ["conservative", "base", "severe"]
@@ -356,4 +493,8 @@ def _plot_meta_weights_and_sensitivity(
     plt.tight_layout()
     plt.savefig(figures_dir / "09_meta_weights_and_sensitivity.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
+
+    best_res = min(results, key=lambda r: r.policy_results["bayes_exact"]["breakdown"].total_cost)
+    ve_sens_df = evaluate_cost_sensitivity_grid(feat_train, y, best_res.oof_probs, cfg=cfg)
+    ve_sens_df.to_csv(output_dir / "ve_and_risk_sensitivity_grid.csv", index=False)
 

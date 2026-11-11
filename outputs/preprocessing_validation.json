@@ -1,0 +1,28 @@
+{
+  "train_rows": 4756,
+  "test_rows": 4749,
+  "train_exact_duplicates": 0,
+  "train_feature_duplicates": 0,
+  "test_feature_duplicates": 0,
+  "id_overlap_count": 0,
+  "id_in_features": false,
+  "target_in_features": false,
+  "numeric_feature_count": 39,
+  "categorical_feature_count": 10,
+  "unseen_test_categories": {},
+  "undocumented_zero_audit": {
+    "opinion_covid_vacc_effective": {
+      "train_zero_count": 92,
+      "test_zero_count": 107,
+      "train_zero_target_rate": 0.25,
+      "train_rank1_target_rate": 0.03225806451612903
+    },
+    "opinion_covid_risk": {
+      "train_zero_count": 96,
+      "test_zero_count": 104,
+      "train_zero_target_rate": 0.2708333333333333,
+      "train_rank1_target_rate": 0.1245819397993311
+    }
+  },
+  "train_test_feature_column_match": true
+}

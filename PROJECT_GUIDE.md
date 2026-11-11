@@ -110,6 +110,7 @@ Operational/conduct rules for participants (own laptops only, silent phones, no 
 * `requirements.txt` — Pinned minimum Python package dependencies (`numpy`, `pandas`, `scikit-learn`, `lightgbm`, `xgboost`, `catboost`, `matplotlib`, `seaborn`, `shap`, `nbformat`, `pytest`).
 * `.gitignore` — Excludes `.venv/`, `__pycache__/`, `.pytest_cache/`, checkpoints, and OS/IDE artifacts from Git.
 * `README.md` — Concise quick-start and structure overview.
+* `PRESENTATION.md` — 6-slide presentation deck outline embedding Figures `01`–`09` and verified metrics.
 * `PROJECT_GUIDE.md` — This full compliance audit, task summary, and file-by-file reference.
 
 ### Generated Outputs (`outputs/` & `submissions/`)

@@ -2,7 +2,7 @@
   "train_rows": 4756,
   "test_rows": 4749,
   "raw_feature_count": 29,
-  "engineered_feature_count": 54,
+  "engineered_feature_count": 49,
   "target_positive_count": 1554,
   "target_negative_count": 3202,
   "target_positive_rate": 0.3267451640033642,
@@ -62,10 +62,6 @@
       "corr": 0.43037502505901337
     },
     {
-      "feature": "opinion_eff_x_risk",
-      "corr": 0.42661023581548685
-    },
-    {
       "feature": "doctor_x_not_worried",
       "corr": 0.3965679127795311
     },
@@ -74,32 +70,36 @@
       "corr": 0.3789833951490127
     },
     {
-      "feature": "opinion_pro_vaccine_index",
-      "corr": 0.35383949389107794
-    },
-    {
       "feature": "opinion_covid_vacc_effective",
       "corr": 0.31127482852884303
-    },
-    {
-      "feature": "opinion_risk_minus_worry",
-      "corr": 0.27398482337721186
     },
     {
       "feature": "health_insurance_is_missing",
       "corr": -0.26838032519391103
     },
     {
-      "feature": "concern_x_knowledge",
-      "corr": 0.19966734384683618
-    },
-    {
       "feature": "health_worker",
       "corr": 0.1971991457941232
+    },
+    {
+      "feature": "is_healthcare_sector",
+      "corr": 0.17253114629745708
+    },
+    {
+      "feature": "health_insurance",
+      "corr": 0.16458389221317427
+    },
+    {
+      "feature": "covid_knowledge",
+      "corr": 0.16426007619985242
+    },
+    {
+      "feature": "covid_concern",
+      "corr": 0.1351906543543674
     }
   ],
-  "mean_estimated_unvacc_hosp_prob": 0.08715742226987543,
-  "mean_estimated_vacc_hosp_prob": 0.015904803691353362,
+  "mean_estimated_unvacc_hosp_prob": 0.07600839064136479,
+  "mean_estimated_vacc_hosp_prob": 0.013532668869921298,
   "subgroup_rates": {
     "doctor_recc_covid": {
       "0": {

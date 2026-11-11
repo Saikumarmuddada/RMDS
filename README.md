@@ -26,6 +26,7 @@ RMDS/
 │   ├── shap_feature_importance.csv      # SHAP rankings
 │   └── hackathon_report.md              # Generated summary report
 ├── PROJECT_GUIDE.md                     # Compliance audit + task-by-task + file-by-file guide
+├── PRESENTATION.md                      # 6-slide presentation deck outline with figures & metrics
 ├── submissions/
 │   ├── challenge_submission_group_0_order_1.csv  # #1 Calibrated_Stack (Bayes-Exact)
 │   ├── challenge_submission_group_0_order_2.csv  # #2 XGBoost (Bayes-Exact)

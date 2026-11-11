@@ -1,38 +1,149 @@
-"""Hospitalisation probability estimation and town-cost optimization."""
+"""Cost model, mathematically derived Bayesian decision policy, and modelled hospitalisation risk.
+
+Important methodological notice:
+Dataset C does NOT contain an empirical COVID-19 hospitalisation outcome column.
+Individual hospitalisation probabilities under unvaccinated (q0) and vaccinated (q1)
+states are therefore explicit modelled epidemiological estimates anchored to published
+peer-reviewed studies and CDC surveillance analyses, evaluated under sensitivity ranges.
+They are NOT clinical risk scores trained on Dataset C outcomes.
+"""
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
-from typing import Literal, Tuple
+from typing import Dict, Literal, Tuple
 
 import numpy as np
 import pandas as pd
 
 from src.config import DATASET_C_CONFIG, DatasetConfig
 
+# ---------------------------------------------------------------------------
+# Scientifically Grounded Modelled Parameters & Explicit Literature Citations
+# ---------------------------------------------------------------------------
+# Baseline unvaccinated infection-to-hospitalisation risk (IHR) mapped onto
+# Dataset C adult age brackets.
+# Primary anchors:
+# 1. Herrera-Esposito & de los Campos (2022), "Age-specific rate of severe and
+#    critical SARS-CoV-2 infections estimated with multi-country seroprevalence
+#    studies", BMC Infectious Diseases 22:311, doi:10.1186/s12879-022-07262-0.
+#    Reported pre-vaccination ISR: 20-29: 0.47% (0.28-0.74%), 30-39: 0.99%
+#    (0.61-1.53%), 40-49: 2.11% (1.31-3.22%), 50-59: 4.49% (2.80-6.84%),
+#    60-69: 9.54% (5.99-14.49%).
+# 2. Verity et al. (2020), "Estimates of the severity of coronavirus disease 2019:
+#    a model-based analysis", Lancet Infect Dis 20(6):669-677,
+#    doi:10.1016/S1473-3099(20)30243-7. Reported Mainland China early-wave IHR:
+#    20-29: 1.0%, 30-39: 3.4%, 40-49: 4.3%, 50-59: 8.2%, 60-69: 11.8%,
+#    70-79: 16.6%, 80+: 18.4%.
+# 3. Salje et al. (2020), "Estimating the burden of SARS-CoV-2 in France",
+#    Science 369:208-211, doi:10.1126/science.abc3517 (overall ~2.6-2.9%, 80+ >=8.3%).
+#
+# Limitation: Survey age brackets (18-34, 65+) aggregate finer 10-year age bands
+# in published studies; midpoint values below sit between Herrera-Esposito (2022)
+# seroprevalence estimates and Verity et al. (2020) upper bounds.
+BASE_AGE_IHR: Dict[str, float] = {
+    "18 - 34 Years": 0.006,
+    "35 - 44 Years": 0.015,
+    "45 - 54 Years": 0.031,
+    "55 - 64 Years": 0.066,
+    "65+ Years": 0.145,
+}
+DEFAULT_UNKNOWN_AGE_IHR: float = 0.035  # Adult mid-distribution prior if age_group is missing
 
-RiskScenario = Literal["conservative", "base", "severe"]
-
-# Age-stratified Infection Hospitalisation Rates (IHR) for SARS-CoV-2
-# under a 100% infection assumption (base profile anchored to public health estimates).
-BASE_AGE_IHR = {
-    "18 - 34 Years": 0.010,
-    "35 - 44 Years": 0.020,
-    "45 - 54 Years": 0.040,
-    "55 - 64 Years": 0.075,
-    "65+ Years": 0.160,
+# Discrete chronic medical condition odds ratios anchored to:
+# Ko et al. (2021), "Risk Factors for COVID-19-Associated Hospitalization:
+# COVID-NET and BRFSS", Clin Infect Dis 72(11):e695-e703, doi:10.1093/cid/ciaa1419.
+# US adult adjusted hospitalization rate ratio (aRR) for >=3 chronic conditions vs
+# 0 conditions was 5.0 (95% CI: 3.9-6.3) adjusted for age, sex, and race/ethnicity.
+# Intermediate levels 1 and 2 follow geometric concave scaling (5^(1/3), 5^(2/3))
+# consistent with concave multimorbidity gradients (cf. Kompaniyets et al. 2021,
+# Prev Chronic Dis, inpatient mortality aRR progression), avoiding unbounded
+# exponential extrapolation on counts > 3 (dataset range 0..6, 98.7% <= 2).
+CHRONIC_CONDITION_OR_MAP: Dict[int, float] = {
+    0: 1.00,
+    1: 1.70,
+    2: 2.90,
+    3: 5.00,  # >= 3 conditions capped cleanly to Ko et al. (2021) >=3 category
 }
 
-SCENARIO_ODDS_MULTIPLIER = {
+# Sex adjustment anchored to a conservative synthesis (male-vs-female OR = 1.45,
+# centered near geometric mean 1.0 so overall adult population baseline stays balanced):
+# - Williamson et al. (2020, OpenSAFELY), Nature 584:430-436: male severe mortality HR=1.59 (1.53-1.65)
+# - Peckham et al. (2020), Nat Commun 11:6317: male ITU OR=2.84 (2.06-3.92), death OR=1.39 (1.31-1.47)
+# - Petrilli et al. (2020), BMJ 369:m1966: Wave-1 NYC admission aOR=2.8 (2.4-3.2)
+# Note: Unsupported heuristic multipliers for health_insurance and income_poverty from
+# prior versions were removed (not calibrated independent admission ORs; 40.1% missingness).
+SEX_ODDS_MULTIPLIER: Dict[str, float] = {
+    "Male": 1.20,
+    "Female": 1.20 / 1.45,  # ~0.8276 (OR Male/Female = 1.45)
+}
+
+# Scenario multipliers capturing epidemic/variant severity uncertainty.
+SCENARIO_ODDS_MULTIPLIER: Dict[str, float] = {
     "conservative": 0.50,
     "base": 1.00,
     "severe": 1.50,
 }
 
+# Vaccine effectiveness against COVID-19 hospitalisation given infection:
+# Tuple: (standard_adult_ve, high_frailty_ve_65plus_or_3plus_chronic)
+# Primary anchors:
+# - Tenforde et al. (2021), JAMA 326(20):2043-2054, doi:10.1001/jama.2021.19499
+#   (PMID 34734975): 2-dose mRNA hospitalisation VE = 86% overall (95% CI: 82-88%),
+#   90% immunocompetent, reduced in elderly/immunocompromised strata (~80%).
+# - Ferdinands et al. (2022), MMWR 71(7):255-263 (VISION Network, Delta & Omicron):
+#   3-dose boosted VE = 91%, waned 2-dose Omicron VE = 54-79% (~65% midpoint).
+VE_REGIMES: Dict[str, Tuple[float, float]] = {
+    "waned_omicron": (0.65, 0.55),
+    "base": (0.86, 0.80),
+    "boosted": (0.91, 0.86),
+}
 
-@dataclass(frozen=True)
+MIN_MODELLED_IHR = 0.002
+MAX_MODELLED_IHR = 0.850
+
+HOSPITALISATION_SCIENTIFIC_SOURCES = {
+    "age_ihr": {
+        "citations": [
+            "Herrera-Esposito & de los Campos (2022), BMC Infect Dis 22:311, doi:10.1186/s12879-022-07262-0",
+            "Verity et al. (2020), Lancet Infect Dis 20(6):669-677, doi:10.1016/S1473-3099(20)30243-7",
+            "Salje et al. (2020), Science 369:208-211, doi:10.1126/science.abc3517",
+        ],
+        "limitation": "Pre-vaccination ancestral SARS-CoV-2 studies use 10-yr brackets mapped onto Dataset C 18-34 and 65+ groups.",
+    },
+    "chronic_conditions": {
+        "citations": [
+            "Ko et al. (2021), Clin Infect Dis 72(11):e695-e703, doi:10.1093/cid/ciaa1419",
+            "Kompaniyets et al. (2021), Prev Chronic Dis 18:210123",
+        ],
+        "estimate": ">=3 conditions vs 0: aRR = 5.0 (95% CI: 3.9-6.3) adjusted for age, sex, race/ethnicity.",
+        "limitation": "Population-rate aRR approximated as odds scaling within bracket IHR; requires infection independence consistent with 100% infection assumption.",
+    },
+    "sex": {
+        "citations": [
+            "Peckham et al. (2020), Nat Commun 11:6317",
+            "Williamson et al. (2020, OpenSAFELY), Nature 584:430-436",
+            "Petrilli et al. (2020), BMJ 369:m1966",
+        ],
+        "estimate": "Conservative centered OR = 1.45 Male vs Female; excluded socioeconomic multipliers due to insufficient multivariable calibration and 40.1% missing health_insurance.",
+    },
+    "vaccine_effectiveness": {
+        "citations": [
+            "Tenforde et al. (2021), JAMA 326(20):2043-2054, doi:10.1001/jama.2021.19499 (PMID 34734975)",
+            "Ferdinands et al. (2022), MMWR 71(7):255-263",
+        ],
+        "estimate": "Base VE_hosp = 86% (95% CI 82-88%) overall, 80% high-frailty; sensitivity covers 65%/55% waned Omicron and 91%/86% boosted.",
+    },
+}
+
+RiskScenario = Literal["conservative", "base", "severe"]
+VERegime = Literal["waned_omicron", "base", "boosted"]
+
+
+@dataclass
 class CostBreakdown:
-    """Detailed financial breakdown for a set of binary vaccine predictions."""
+    """Full accounting breakdown of expected town financial expenditure."""
 
     total_cost: float
     cost_per_person: float
@@ -48,65 +159,245 @@ class CostBreakdown:
     savings_vs_treat_all: float
     captured_oracle_savings_pct: float
     predicted_positive_rate: float
+    # Extended granular accounting fields (defaults preserve backward construction)
+    accepted_vaccine_cost: float = 0.0
+    wasted_vaccine_cost: float = 0.0
+    vaccines_allocated: int = 0
+    vaccines_accepted: int = 0
+    wasted_vaccines: int = 0
+    law_compensation_count: int = 0
 
 
 def _logit(p: np.ndarray) -> np.ndarray:
-    p_clipped = np.clip(p, 1e-6, 1.0 - 1e-6)
-    return np.log(p_clipped / (1.0 - p_clipped))
+    p_clip = np.clip(p, 1e-6, 1.0 - 1e-6)
+    return np.log(p_clip / (1.0 - p_clip))
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
+    x_clip = np.clip(x, -30.0, 30.0)
+    return 1.0 / (1.0 + np.exp(-x_clip))
+
+
+def _prepare_probabilities(
+    arr: np.ndarray | pd.Series,
+    name: str,
+    *,
+    strict: bool = False,
+    nan_fill: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Validate and safely coerce probability arrays into [0, 1].
+
+    Returns (clean_array, valid_mask_before_fill).
+    """
+    vals = np.asarray(arr, dtype=np.float64)
+    finite_mask = np.isfinite(vals)
+    out_of_range = finite_mask & ((vals < -1e-9) | (vals > 1.0 + 1e-9))
+
+    if strict:
+        if not np.all(finite_mask):
+            raise ValueError(f"{name} contains non-finite values (NaN or Inf).")
+        if np.any(out_of_range):
+            raise ValueError(f"{name} contains out-of-range probabilities outside [0, 1].")
+
+    if not np.all(finite_mask):
+        warnings.warn(
+            f"{name} contains non-finite values; applying safe conservative fallback.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    if np.any(out_of_range):
+        warnings.warn(
+            f"{name} contains values outside [0, 1]; clipping to [0, 1].",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+    cleaned = np.where(finite_mask, vals, nan_fill)
+    cleaned = np.clip(cleaned, 0.0, 1.0)
+    return cleaned, finite_mask
+
+
+def compute_ece(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> float:
+    """Compute Expected Calibration Error (ECE) over uniform [0, 1] confidence bins."""
+    yt = np.asarray(y_true, dtype=np.float64)
+    yp, _ = _prepare_probabilities(y_prob, "y_prob", strict=False, nan_fill=0.0)
+    if len(yt) == 0:
+        return 0.0
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    n = float(len(yt))
+    for i in range(n_bins):
+        lo, hi = bin_edges[i], bin_edges[i + 1]
+        if i == n_bins - 1:
+            mask = (yp >= lo) & (yp <= hi)
+        else:
+            mask = (yp >= lo) & (yp < hi)
+        if np.any(mask):
+            conf = float(np.mean(yp[mask]))
+            acc = float(np.mean(yt[mask]))
+            ece += (float(np.sum(mask)) / n) * abs(acc - conf)
+    return float(ece)
 
 
 def estimate_hospitalisation_probabilities(
     df: pd.DataFrame,
     scenario: RiskScenario = "base",
+    *,
+    ve_regime: VERegime = "base",
+    include_sex_adjustment: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Estimate P(hospitalisation | features, unvaccinated) and P(hospitalisation | features, vaccinated).
+    """Estimate individual hospitalisation probabilities under 100% infection risk.
 
-    Factors incorporated from Dataset C:
-    1. age_group: strongest driver of COVID-19 infection-hospitalisation risk.
-    2. number_chronic_med_conditions: each chronic condition raises hospitalisation odds (~1.55x).
-    3. sex: male sex carries modestly higher severe outcome odds (~1.20x vs female ~0.90x).
-    4. health_insurance / income_poverty: uninsured or below-poverty status modestly raises risk.
-    5. vaccination status: ~85% relative risk reduction (80% in older/multi-comorbidity patients).
+    Modelled probabilities use peer-reviewed age IHRs (Herrera-Esposito & de los
+    Campos 2022; Verity et al. 2020), chronic condition adjustment (Ko et al. 2021),
+    modest sex odds scaling (Peckham et al. 2020; Williamson et al. 2020), and
+    mRNA vaccine effectiveness (Tenforde et al. 2021; Ferdinands et al. 2022).
     """
     if scenario not in SCENARIO_ODDS_MULTIPLIER:
-        raise ValueError(f"Unknown risk scenario: {scenario}")
+        raise ValueError(f"Unsupported risk scenario: {scenario}")
+    if ve_regime not in VE_REGIMES:
+        raise ValueError(f"Unsupported VE regime: {ve_regime}")
 
-    base_age = df["age_group"].map(BASE_AGE_IHR).fillna(0.045).to_numpy(dtype=np.float64)
-    log_odds = _logit(base_age)
+    n = len(df)
+    if n == 0:
+        empty = np.zeros(0, dtype=np.float64)
+        return empty, empty.copy()
 
-    # Scenario calibration shift
-    log_odds += np.log(SCENARIO_ODDS_MULTIPLIER[scenario])
+    if "age_group" in df.columns:
+        age_clean = df["age_group"].astype("string").str.strip()
+        base_ihr = (
+            age_clean.map(BASE_AGE_IHR).fillna(DEFAULT_UNKNOWN_AGE_IHR).to_numpy(dtype=np.float64)
+        )
+    else:
+        age_clean = pd.Series(["Missing"] * n, dtype="string")
+        base_ihr = np.full(n, DEFAULT_UNKNOWN_AGE_IHR, dtype=np.float64)
 
-    # Chronic medical conditions (capped at 5 effective conditions to avoid extreme saturation)
-    chronic = df["number_chronic_med_conditions"].fillna(0).clip(0, 5).to_numpy(dtype=np.float64)
-    log_odds += chronic * np.log(1.55)
+    log_odds = _logit(base_ihr) + np.log(SCENARIO_ODDS_MULTIPLIER[scenario])
 
-    # Sex adjustment (centered around 1.0)
-    sex_mult = np.where(
-        df["sex"] == "Male",
-        1.20,
-        np.where(df["sex"] == "Female", 0.90, 1.00),
-    )
-    log_odds += np.log(sex_mult)
+    # Chronic medical conditions: map NaN/negative -> 0, counts >= 3 capped to 3 (Ko et al. 2021)
+    if "number_chronic_med_conditions" in df.columns:
+        chronic_raw = pd.to_numeric(df["number_chronic_med_conditions"], errors="coerce")
+        chronic_bucket = chronic_raw.fillna(0).clip(lower=0, upper=3).round().astype(int)
+    else:
+        chronic_bucket = pd.Series(0, index=df.index, dtype=int)
+    chronic_or = chronic_bucket.map(CHRONIC_CONDITION_OR_MAP).fillna(1.0).to_numpy(dtype=np.float64)
+    log_odds += np.log(chronic_or)
 
-    # Socioeconomic / access adjustment
-    uninsured = (df["health_insurance"] == 0).to_numpy(dtype=bool)
-    below_poverty = (df["income_poverty"] == "Below Poverty").to_numpy(dtype=bool)
-    log_odds += np.where(uninsured, np.log(1.15), 0.0)
-    log_odds += np.where(below_poverty, np.log(1.12), 0.0)
+    # Sex adjustment (optional toggle for sensitivity verification)
+    if include_sex_adjustment and "sex" in df.columns:
+        sex_clean = df["sex"].astype("string").str.strip()
+        sex_mult = sex_clean.map(SEX_ODDS_MULTIPLIER).fillna(1.00).to_numpy(dtype=np.float64)
+        log_odds += np.log(sex_mult)
 
-    p_unvacc = np.clip(_sigmoid(log_odds), 0.002, 0.85)
+    p_unvacc = np.clip(_sigmoid(log_odds), MIN_MODELLED_IHR, MAX_MODELLED_IHR)
 
     # Vaccine effectiveness against hospitalisation given infection
-    high_frailty = (df["age_group"] == "65+ Years").to_numpy(dtype=bool) | (chronic >= 2)
-    ve_hosp = np.where(high_frailty, 0.80, 0.85)
-    p_vacc = p_unvacc * (1.0 - ve_hosp)
+    std_ve, frail_ve = VE_REGIMES[ve_regime]
+    is_high_frailty = (age_clean == "65+ Years").to_numpy(dtype=bool) | (
+        chronic_bucket.to_numpy() >= 3
+    )
+    ve_hosp = np.where(is_high_frailty, frail_ve, std_ve)
+    p_vacc = np.clip(p_unvacc * (1.0 - ve_hosp), 0.0, MAX_MODELLED_IHR)
 
     return p_unvacc, p_vacc
+
+
+def bayes_optimal_thresholds(
+    p_hosp_unvacc: np.ndarray,
+    p_hosp_vacc: np.ndarray,
+    cfg: DatasetConfig = DATASET_C_CONFIG,
+    *,
+    strict: bool = False,
+) -> np.ndarray:
+    """Compute exact individual Bayes-optimal acceptance probability threshold tau*(x_i).
+
+    Derivation under 100% infection risk:
+        E[Cost(send=1)] = C_v + C_h * q0 - p * C_h * (q0 - q1)
+        E[Cost(send=0)] = p * C_v + C_h * q0
+        Send iff E[Cost(send=1)] <= E[Cost(send=0)]
+            <=> (1 - p) * C_v <= p * C_h * (q0 - q1)
+            <=> p >= C_v / (C_v + C_h * (q0 - q1))  when (q0 - q1) > 0.
+    When q1 >= q0 (vaccine yields zero/negative benefit) or inputs are non-finite,
+    returns threshold = 1.0 (and policy callers block allocation even at p=1.0).
+    """
+    q0, valid_q0 = _prepare_probabilities(
+        p_hosp_unvacc, "p_hosp_unvacc", strict=strict, nan_fill=0.0
+    )
+    q1, valid_q1 = _prepare_probabilities(
+        p_hosp_vacc, "p_hosp_vacc", strict=strict, nan_fill=0.0
+    )
+    if q0.shape != q1.shape:
+        raise ValueError("p_hosp_unvacc and p_hosp_vacc must have identical shapes.")
+
+    cv = float(cfg.vaccine_cost)
+    ch = float(cfg.hospitalisation_cost)
+    if cv < 0 or ch < 0:
+        raise ValueError("Costs must be non-negative.")
+
+    delta = q0 - q1
+    valid_both = valid_q0 & valid_q1
+    beneficial = valid_both & (delta > 0.0)
+
+    denom = cv + ch * np.maximum(delta, 0.0)
+    raw_tau = np.where(beneficial & (denom > 0.0), cv / np.maximum(denom, 1e-12), 1.0)
+    return np.clip(raw_tau, 0.0, 1.0)
+
+
+def expected_decision_cost(
+    y_prob: np.ndarray,
+    y_pred: np.ndarray,
+    p_hosp_unvacc: np.ndarray,
+    p_hosp_vacc: np.ndarray,
+    cfg: DatasetConfig = DATASET_C_CONFIG,
+    *,
+    strict: bool = False,
+) -> np.ndarray:
+    """Compute per-person closed-form expected financial expenditure given y_prob and action y_pred."""
+    p, _ = _prepare_probabilities(y_prob, "y_prob", strict=strict, nan_fill=0.0)
+    q0, _ = _prepare_probabilities(p_hosp_unvacc, "p_hosp_unvacc", strict=strict, nan_fill=0.0)
+    q1, _ = _prepare_probabilities(p_hosp_vacc, "p_hosp_vacc", strict=strict, nan_fill=0.0)
+    pred = np.asarray(y_pred, dtype=np.int64)
+    if not (p.shape == q0.shape == q1.shape == pred.shape):
+        raise ValueError("Input arrays must share the same shape.")
+
+    cv = float(cfg.vaccine_cost)
+    ch = float(cfg.hospitalisation_cost)
+    cost_send = cv + ch * (q0 - p * (q0 - q1))
+    cost_skip = p * cv + ch * q0
+    return np.where(pred == 1, cost_send, cost_skip)
+
+
+def predict_with_cost_policy(
+    y_prob: np.ndarray,
+    p_hosp_unvacc: np.ndarray,
+    p_hosp_vacc: np.ndarray,
+    policy: str = "bayes",
+    threshold_param: float = 1.0,
+    cfg: DatasetConfig = DATASET_C_CONFIG,
+    *,
+    strict: bool = False,
+) -> np.ndarray:
+    """Convert predicted probabilities into 0/1 vaccine send decisions.
+
+    policy='bayes': y_prob >= clip(tau*(x) * threshold_param, 0, 1), gated by (q0 > q1)
+                    and valid probabilities so zero/harmful VE never receives a dose.
+    policy='global': constant probability cutoff across all individuals (fixed baseline).
+    """
+    probs, valid_p = _prepare_probabilities(y_prob, "y_prob", strict=strict, nan_fill=0.0)
+    if policy == "bayes":
+        q0, valid_q0 = _prepare_probabilities(
+            p_hosp_unvacc, "p_hosp_unvacc", strict=strict, nan_fill=0.0
+        )
+        q1, valid_q1 = _prepare_probabilities(
+            p_hosp_vacc, "p_hosp_vacc", strict=strict, nan_fill=0.0
+        )
+        tau = bayes_optimal_thresholds(q0, q1, cfg=cfg, strict=False)
+        cutoff = np.clip(tau * float(threshold_param), 0.0, 1.0)
+        beneficial = valid_p & valid_q0 & valid_q1 & ((q0 - q1) > 0.0)
+        return (beneficial & (probs >= cutoff)).astype(np.int64)
+    if policy == "global":
+        return (valid_p & (probs >= float(threshold_param))).astype(np.int64)
+    raise ValueError(f"Unsupported policy: {policy}")
 
 
 def compute_town_cost(
@@ -115,33 +406,88 @@ def compute_town_cost(
     p_hosp_unvacc: np.ndarray,
     p_hosp_vacc: np.ndarray,
     cfg: DatasetConfig = DATASET_C_CONFIG,
+    *,
+    strict: bool = True,
 ) -> CostBreakdown:
     """Compute exact expected town cost under the Target Metric Information rules."""
     y_t = np.asarray(y_true, dtype=np.int64)
     y_p = np.asarray(y_pred, dtype=np.int64)
+    if y_t.shape != y_p.shape:
+        raise ValueError("y_true and y_pred must have matching shapes.")
+    if len(y_t) == 0:
+        raise ValueError("Cannot compute town cost on empty arrays.")
+    if not np.all(np.isin(y_t, (0, 1))):
+        raise ValueError("y_true must contain only binary values {0, 1}.")
+    if not np.all(np.isin(y_p, (0, 1))):
+        raise ValueError("y_pred must contain only binary values {0, 1}.")
 
-    cv = cfg.vaccine_cost
-    ch = cfg.hospitalisation_cost
+    q0, _ = _prepare_probabilities(
+        p_hosp_unvacc, "p_hosp_unvacc", strict=strict, nan_fill=DEFAULT_UNKNOWN_AGE_IHR
+    )
+    q1, _ = _prepare_probabilities(
+        p_hosp_vacc, "p_hosp_vacc", strict=strict, nan_fill=DEFAULT_UNKNOWN_AGE_IHR
+    )
+    if q0.shape != y_t.shape or q1.shape != y_t.shape:
+        raise ValueError("Hospitalisation probability arrays must match y_true shape.")
 
-    def _raw_cost(pred: np.ndarray) -> Tuple[float, float, float, float]:
-        send_cost = float(np.sum(pred == 1) * cv)
-        law_cost = float(np.sum((pred == 0) & (y_t == 1)) * cv)
-        vaccinated = (pred == 1) & (y_t == 1)
-        p_hosp = np.where(vaccinated, p_hosp_vacc, p_hosp_unvacc)
+    cv = float(cfg.vaccine_cost)
+    ch = float(cfg.hospitalisation_cost)
+
+    def _raw_cost(pred: np.ndarray) -> Tuple[float, float, float, float, float, float, int, int, int, int]:
+        allocated_mask = pred == 1
+        accepted_mask = allocated_mask & (y_t == 1)
+        wasted_mask = allocated_mask & (y_t == 0)
+        law_mask = (pred == 0) & (y_t == 1)
+
+        vaccines_alloc = int(np.sum(allocated_mask))
+        vaccines_acc = int(np.sum(accepted_mask))
+        wasted_cnt = int(np.sum(wasted_mask))
+        law_cnt = int(np.sum(law_mask))
+
+        send_cost = float(vaccines_alloc * cv)
+        accepted_cost = float(vaccines_acc * cv)
+        wasted_cost = float(wasted_cnt * cv)
+        law_cost = float(law_cnt * cv)
+
+        p_hosp = np.where(accepted_mask, q1, q0)
         exp_hosp = float(np.sum(p_hosp))
         hosp_cost = exp_hosp * ch
-        return send_cost, law_cost, exp_hosp, hosp_cost
+        return (
+            send_cost,
+            law_cost,
+            exp_hosp,
+            hosp_cost,
+            accepted_cost,
+            wasted_cost,
+            vaccines_alloc,
+            vaccines_acc,
+            wasted_cnt,
+            law_cnt,
+        )
 
-    send_cost, law_cost, exp_hosp, hosp_cost = _raw_cost(y_p)
+    (
+        send_cost,
+        law_cost,
+        exp_hosp,
+        hosp_cost,
+        accepted_cost,
+        wasted_cost,
+        vaccines_alloc,
+        vaccines_acc,
+        wasted_cnt,
+        law_cnt,
+    ) = _raw_cost(y_p)
     total_cost = send_cost + law_cost + hosp_cost
 
-    _, none_law, _, none_hosp = _raw_cost(np.zeros_like(y_t))
+    _, none_law, _, none_hosp, *_ = _raw_cost(np.zeros_like(y_t))
     treat_none_cost = none_law + none_hosp
 
-    all_send, _, _, all_hosp = _raw_cost(np.ones_like(y_t))
+    all_send, _, _, all_hosp, *_ = _raw_cost(np.ones_like(y_t))
     treat_all_cost = all_send + all_hosp
 
-    oracle_send, oracle_law, _, oracle_hosp = _raw_cost(y_t)
+    # Exact Oracle allocates to y_t == 1 iff vaccination actually lowers hospitalisation risk
+    oracle_pred = ((y_t == 1) & (q0 > q1)).astype(np.int64)
+    oracle_send, oracle_law, _, oracle_hosp, *_ = _raw_cost(oracle_pred)
     oracle_min_cost = oracle_send + oracle_law + oracle_hosp
 
     baseline_best = min(treat_none_cost, treat_all_cost)
@@ -163,44 +509,13 @@ def compute_town_cost(
         savings_vs_treat_all=treat_all_cost - total_cost,
         captured_oracle_savings_pct=captured_pct,
         predicted_positive_rate=float(np.mean(y_p)),
+        accepted_vaccine_cost=accepted_cost,
+        wasted_vaccine_cost=wasted_cost,
+        vaccines_allocated=vaccines_alloc,
+        vaccines_accepted=vaccines_acc,
+        wasted_vaccines=wasted_cnt,
+        law_compensation_count=law_cnt,
     )
-
-
-def bayes_optimal_thresholds(
-    p_hosp_unvacc: np.ndarray,
-    p_hosp_vacc: np.ndarray,
-    cfg: DatasetConfig = DATASET_C_CONFIG,
-) -> np.ndarray:
-    """Compute exact per-person acceptance probability threshold tau*(x_i).
-
-    Predicting 1 beats predicting 0 in expected cost iff:
-        P(y=1 | x) > C_v / (C_v + C_h * (p_hosp_unvacc - p_hosp_vacc))
-    """
-    delta_hosp_savings = np.maximum(p_hosp_unvacc - p_hosp_vacc, 0.0) * cfg.hospitalisation_cost
-    return cfg.vaccine_cost / (cfg.vaccine_cost + delta_hosp_savings)
-
-
-def predict_with_cost_policy(
-    y_prob: np.ndarray,
-    p_hosp_unvacc: np.ndarray,
-    p_hosp_vacc: np.ndarray,
-    policy: str = "bayes",
-    threshold_param: float = 1.0,
-    cfg: DatasetConfig = DATASET_C_CONFIG,
-) -> np.ndarray:
-    """Convert predicted probabilities into 0/1 vaccine send decisions.
-
-    policy='bayes': threshold_param scales tau*(x_i), i.e., y_prob >= clip(tau* * scale, 0, 1).
-    policy='global': threshold_param is a constant probability cutoff across all individuals.
-    """
-    probs = np.asarray(y_prob, dtype=np.float64)
-    if policy == "bayes":
-        tau = bayes_optimal_thresholds(p_hosp_unvacc, p_hosp_vacc, cfg=cfg)
-        cutoff = np.clip(tau * threshold_param, 0.0, 1.0)
-        return (probs >= cutoff).astype(np.int64)
-    if policy == "global":
-        return (probs >= threshold_param).astype(np.int64)
-    raise ValueError(f"Unsupported policy: {policy}")
 
 
 def tune_threshold_on_oof(
@@ -211,12 +526,12 @@ def tune_threshold_on_oof(
     folds: np.ndarray | None = None,
     cfg: DatasetConfig = DATASET_C_CONFIG,
 ) -> dict:
-    """Compare 0.5 cutoff, global tuned, Bayes-optimal (zero tuning), and nested-CV Bayes-scaled."""
+    """Compare 0.50 cutoff, global tuned, Bayes-optimal (zero tuning), and CV Bayes-scaled."""
     y_t = np.asarray(y_true, dtype=np.int64)
-    probs = np.asarray(oof_probs, dtype=np.float64)
+    probs, _ = _prepare_probabilities(oof_probs, "oof_probs", strict=False, nan_fill=0.0)
     results = {}
 
-    # 1. Naive 0.5 cutoff
+    # 1. Naive 0.50 cutoff
     pred_05 = (probs >= 0.5).astype(np.int64)
     results["global_0.5"] = {
         "policy": "global",
@@ -224,7 +539,6 @@ def tune_threshold_on_oof(
         "breakdown": compute_town_cost(y_t, pred_05, p_hosp_unvacc, p_hosp_vacc, cfg),
     }
 
-    # 2. Global threshold (nested CV if folds provided, else direct)
     def _best_global(yt: np.ndarray, pr: np.ndarray, pu: np.ndarray, pv: np.ndarray) -> float:
         best_t, best_c = 0.5, float("inf")
         for t in np.linspace(0.05, 0.95, 181):
@@ -302,3 +616,56 @@ def tune_threshold_on_oof(
     }
 
     return results
+
+
+def evaluate_cost_sensitivity_grid(
+    df: pd.DataFrame,
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    cfg: DatasetConfig = DATASET_C_CONFIG,
+) -> pd.DataFrame:
+    """Evaluate fixed-0.50 vs person-specific Bayes decision policies across IHR x VE x Sex sensitivity."""
+    rows = []
+    specs = [
+        ("conservative", "waned_omicron", True),
+        ("conservative", "base", True),
+        ("base", "waned_omicron", True),
+        ("base", "base", True),
+        ("base", "base", False),  # Sex-neutral sensitivity check
+        ("base", "boosted", True),
+        ("severe", "waned_omicron", True),
+        ("severe", "base", True),
+        ("severe", "boosted", True),
+    ]
+    y_t = np.asarray(y_true, dtype=np.int64)
+    probs, _ = _prepare_probabilities(y_prob, "y_prob", strict=False, nan_fill=0.0)
+
+    for scen, ve_reg, use_sex in specs:
+        pu, pv = estimate_hospitalisation_probabilities(
+            df,
+            scenario=scen,  # type: ignore[arg-type]
+            ve_regime=ve_reg,  # type: ignore[arg-type]
+            include_sex_adjustment=use_sex,
+        )
+        pred_bayes = predict_with_cost_policy(probs, pu, pv, policy="bayes", threshold_param=1.0, cfg=cfg)
+        pred_fixed = predict_with_cost_policy(probs, pu, pv, policy="global", threshold_param=0.5, cfg=cfg)
+        cb_b = compute_town_cost(y_t, pred_bayes, pu, pv, cfg=cfg)
+        cb_f = compute_town_cost(y_t, pred_fixed, pu, pv, cfg=cfg)
+        rows.append(
+            {
+                "ihr_scenario": scen,
+                "ve_regime": ve_reg,
+                "include_sex_adj": use_sex,
+                "mean_p_unvacc": float(np.mean(pu)),
+                "mean_p_vacc": float(np.mean(pv)),
+                "fixed_05_total_cost": cb_f.total_cost,
+                "bayes_total_cost": cb_b.total_cost,
+                "bayes_savings_vs_fixed_05": cb_f.total_cost - cb_b.total_cost,
+                "bayes_vaccines_allocated": cb_b.vaccines_allocated,
+                "bayes_wasted_vaccines": cb_b.wasted_vaccines,
+                "bayes_law_comp_count": cb_b.law_compensation_count,
+                "bayes_expected_hosp": cb_b.expected_hospitalisations,
+                "bayes_captured_oracle_pct": cb_b.captured_oracle_savings_pct,
+            }
+        )
+    return pd.DataFrame(rows)
