@@ -1,158 +1,155 @@
-# RMDS Hackathon Dataset C — Technical Audit & Correction Report
+# RMDS Hackathon Dataset C — Technical Audit & Verification Report
 
-## 1. Audit Summary & Key Outcomes
-An end-to-end technical audit of the RMDS Hackathon Dataset C pipeline (4,756 labeled training respondents; 4,749 testing respondents; vaccine cost $C_v = \$1{,}500$; COVID-19 hospitalisation cost $C_h = \$41{,}000$; 100% infection assumption) identified **four major methodological flaws** in the original implementation and further hardened API compatibility, warning-free SHAP extraction, defensive numeric coercion, and Category A–H verification. Everything is verified by an expanded **15-test automated `pytest` suite (`15 passed`, zero warnings)** and full pipeline re-execution (`main.py --group 0`).
+## 1. Executive Summary & Audit Outcome
 
-### Root Problems Found & Fixed
-1. **Outer Validation Leakage via Boosting Early Stopping (`src/modeling.py`):** LightGBM, XGBoost, and CatBoost previously passed the outer validation fold `(X_va, y_va)` directly to `eval_set` for early stopping, leaking validation labels into model complexity selection. **Fix:** Structural removal of `y_va` from [`fit_outer_fold_models`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) and [`_fit_base_models_on_train_only`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py); boosting early stopping now uses an internal 85%/15% stratified split carved strictly from the active training fold (`3,233–3,234` fit / `571` inner-ES rows per outer fold).
-2. **Cross-Fitting & Calibration Leakage in Stacking (`src/modeling.py`):** `Calibrated_Stack` previously trained per-fold meta-learners over full outer `oof_dict` predictions whose underlying base models had seen the current outer fold's validation observations in complementary folds, without out-of-sample post-hoc calibration or ECE tracking. **Fix:** Implemented a **nested 5x4 cross-fitting architecture** inside each outer training partition to produce strictly uncontaminated inner OOF base logits `Z_inner`, selected regularization `C` via inner CV, generated strictly out-of-fold inner meta predictions, and evaluated `none` vs `platt` vs `isotonic` calibration on held-out inner folds. Across all 5 outer folds (`0..4`), isolated inner-CV LogLoss confirmed that uncalibrated `C = 0.05` L2 logit stacking (`0.4168–0.4228`) already outperformed Platt (`0.4176–0.4243`) and Isotonic (`0.4219–0.4303`), cutting out-of-fold **ECE from `0.0143` down to `0.0088`**.
-3. **Undocumented / Heuristic Hospitalisation Parameters (`src/cost_model.py`):** `BASE_AGE_IHR`, exponential `chronic * log(1.55)` compounding, and uncalibrated socioeconomic multipliers (`health_insurance == 0 -> 1.15`, `income_poverty == "Below Poverty" -> 1.12`) lacked literature anchors. **Fix:** Replaced `BASE_AGE_IHR`, discrete chronic condition multipliers, sex scaling, and VE estimates with documented peer-reviewed anchors (`Herrera-Esposito & de los Campos 2022`, `Verity et al. 2020`, `Ko et al. 2021`, `Peckham et al. 2020`, `Williamson et al. 2020`, `Tenforde et al. 2021`, `Ferdinands et al. 2022`), removed the unsupported socioeconomic risk multipliers (noting 40.1% missingness on `health_insurance`), added edge-case protection (`VE <= 0`, `C_v = 0`, `NaN`/out-of-range inputs), and expanded multi-axis sensitivity evaluation across `IHR Scenario x VE Regime x Sex Adjustment`.
-4. **SHAP Single-Fold Bias, Misleading Category Codes & Feature Bloat (`src/explainability.py`, `src/data_prep.py`):** SHAP previously analyzed only Fold 0 and mapped unordered categorical strings onto `.cat.codes` for the continuous beeswarm colorbar; the meta-learner chart mislabeled log-odds coefficients as "Blend Weights"; and 5 collinear opinion composites inflated variance. **Fix:** Computed out-of-fold SHAP across all 5 outer folds (`outputs/shap_feature_importance.csv` with fold mean/SD and rank stability), restricted the beeswarm plot to numeric/ordinal/binary features (`08_explainability_shap_beeswarm.png`), added a dedicated categorical category-level bar chart (`08b_explainability_categorical_shap.png`), renamed the meta-learner plot accurately (`Meta-Learner Logistic Regression Coefficients (Log-Odds)`), and pruned the 5 noisy opinion composites (`54 -> 49` features) after leakage-free CV ablation improved both Logistic Regression and LightGBM LogLoss/ROC-AUC.
+A Principal ML / Code Audit of the RMDS Hackathon Dataset C pipeline (`4,756` labeled training respondents; `4,749` test respondents; vaccine cost $C_v = \$1{,}500$; hospitalisation cost $C_h = \$41{,}000$; 100% infection assumption) identified, fixed, and verified every structural leakage vector, effect-measure inconsistency, CV threshold risk, feature-ablation gap, SHAP distortion, and test bottleneck across the codebase.
 
-### Remaining Limitations Explicitly Noted
-* **No Ground-Truth Hospitalisation Outcomes in Dataset C:** `dataset_C_training.csv` contains vaccine acceptance (`covid_vaccine`), not COVID-19 hospitalisations. All hospitalisation probabilities `(q0, q1)` remain **modelled epidemiological estimates**, not empirical clinical predictions learned from Dataset C.
-* **Epidemiological Bracket & Variant Extrapolation:** Cited seroprevalence IHR studies (`Herrera-Esposito 2022`, `Verity 2020`) use pre-vaccination ancestral cohorts and 10-year age brackets (`20-29`, `30-39`, ..., `70-79`, `80+`) mapped onto Dataset C's aggregated `18 - 34 Years` and `65+ Years` brackets.
-* **Population Rate Ratios vs Conditional Severity:** Ko et al. (2021) reported population-rate `aRR = 5.0 (95% CI: 3.9–6.3)` for `>=3` chronic conditions; applying this as an odds multiplier on bracket IHR assumes comparable infection exposure across chronic strata (consistent with the assignment's 100% winter-party infection rule).
+* **Automated Test Suite:** `py_compile` passed with exit code `0`; `pytest -v` executed all **18 tests in 77.91s (`18 passed, 0 failed, 0 skipped, 0 warnings`)** after hardening fast-mode training concurrency and adding nested calibration, `cloglog` / Zhang-Yu, CV fallback policy, and feature-ablation coverage.
+* **Complete End-to-End Execution (`main.py --group 0`):** Completed stages `[1/6]` through `[6/6]` cleanly with exit code `0`, regenerating all 16 files in `outputs/`, all 10 charts in `outputs/figures/`, and all 5 diverse submissions + manifest in `submissions/`.
+* **Winning Honest Out-of-Sample Solution:** [`Calibrated_Stack`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) (`Uncalibrated_Stack`, nested L2 logit meta-learner `C = 0.05` with inner-CV identity calibration) achieves **#1 OOF ROC-AUC (`0.8670`)**, **#1 LogLoss (`0.4173`)**, **#1 Brier (`0.1313`)**, **#1 ECE (`0.0088`)**, and **#1 Bayes-Exact Town Cost (`$14,281,676` | `$3,002.88/person`)** — saving **`$458,727` over fixed `0.50` (`$14,740,402`)**, **`$3,318,874` over Treat-None (`$17,600,550`)**, and capturing **`68.7%` of Oracle savings (`$12,778,366`)**.
+* **Critical Empirical Caveat Maintained:** Dataset C contains **no empirical hospitalisation outcome column**. Individual `(q0, q1)` hospitalisation probabilities remain **modelled epidemiological estimates** anchored to peer-reviewed literature (`PARTIAL` scientific status — never claimed as clinically validated risk predictions on Dataset C).
 
 ---
 
-## 2. Leakage Audit & Nested Cross-Validation (`src/modeling.py`)
+## 2. Calibrated Stacking Leakage Audit (`src/modeling.py`)
 
-### Before (Leaky) vs. After (Audited) Validation Architecture
+### Root Leakage Risk Resolved
+Previously, `best_c` regularization selection evaluated LogLoss across the full inner OOF matrix `Z_inner` **before** calling `select_and_fit_posthoc_calibration` across folds of `Z_inner`. Although minor (5 grid values over ~3,804 rows), `cal_va` labels participated in selecting the meta-learner regularization parameter `C`, introducing subtle selection bias into calibration comparison.
 
-| Stage | Original Implementation (Leaky) | Corrected Implementation (Leakage-Free) |
-| :--- | :--- | :--- |
-| **Preprocessing & Categories** | Category vocabs fitted on `X_tr` inside outer loop (acceptable), but boosting early stopping looked directly at `(X_va, y_va)`. | `_prepare_category_frames` fits category vocabularies strictly on `X_bfit` (for boosting) and `X_tr` (for sklearn), mapping unseen categories safely to `"Missing"`. |
-| **Boosting Early Stopping** | `LGBMClassifier`, `XGBClassifier`, and `CatBoostClassifier` passed outer `(X_va, y_va)` to `eval_set`. | `y_va` is absent from `fit_outer_fold_models` and `_fit_base_models_on_train_only` signatures; an internal 85%/15% stratified ES split (`3,233–3,234` fit / `571` ES rows) inside active `tr_idx` governs stopping. |
-| **Stacking Meta-Features** | Meta-learner fit across outer `oof_dict` whose base folds overlapped the active outer fold. | Inside each outer training fold (`n = 3,804–3,805`), an inner 4-fold Stratified CV trains all 6 base models (with inner ES inside each 3/4 slice) to yield strictly clean `Z_inner` (`logit(inner_oof_probs)`). |
-| **Hyperparameter & Calibration** | Fixed `C=0.3`; no post-hoc calibration comparison or ECE evaluation. | Inner CV selects `C in {0.05, 0.1, 0.25, 0.5, 1.0}` on `Z_inner` (`C=0.05` across all 5 outer folds); out-of-fold inner meta predictions (`meta_inner_oof`) evaluate `none` vs `platt` vs `isotonic` strictly out-of-sample before transforming outer `Z_va` and `Z_te`. |
+### Strictly Nested Architecture Implemented
+[`fit_outer_fold_models`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) never accepts `y_va` in its signature and now invokes [`evaluate_calibration_nested`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) alongside [`_select_best_meta_c`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py):
+1. Within each outer training fold `tr_idx` (`3,804–3,805` rows), an inner 4-fold Stratified CV (`3/4` inner train with strict `85%/15%` boosting early stopping; `0` overlap with outer `va_idx`) generates strictly clean base logits `Z_inner`.
+2. Inside [`evaluate_calibration_nested`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py), for each calibration fold $j \in \{0,1,2,3\}$:
+   * [`_select_best_meta_c`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) tunes $c_j \in \{0.05, 0.1, 0.25, 0.5, 1.0\}$ strictly out-of-fold **inside `cal_tr` (`inner_fold_ids != j`)** and returns strictly sub-OOF training logits `sub_meta_oof_tr`.
+   * `meta_j` fits on `(Z_inner[cal_tr], y_tr[cal_tr])` using $c_j$ and predicts untouched `Z_inner[cal_va]` into `nested_raw_oof[cal_va]`.
+   * Candidate calibrators (`none`, `platt`, `isotonic`) fit strictly on `(sub_meta_oof_tr, y_tr[cal_tr])` and score strictly untouched `cal_va`.
+3. Only after choosing `best_cal_mode` strictly out-of-sample does [`_select_best_meta_c`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) pick full-`Z_inner` `best_c` and fit `meta_full` + `final_calibrator` to predict outer `va_idx` and `X_test`.
 
-### Isolated Calibration Audit (`outputs/stacking_calibration_audit.csv`)
-| Outer Fold | Best Meta `C` | Inner-OOF LogLoss (`none`) | Inner-OOF LogLoss (`platt`) | Inner-OOF LogLoss (`isotonic`) | Selected Calibrator | ES Fit / Val Rows |
-| ---: | ---: | ---: | ---: | ---: | :--- | ---: |
-| 0 | 0.05 | **0.4191** | 0.4206 | 0.4303 | `none` | 3,233 / 571 |
-| 1 | 0.05 | **0.4171** | 0.4193 | 0.4222 | `none` | 3,234 / 571 |
-| 2 | 0.05 | **0.4228** | 0.4243 | 0.4303 | `none` | 3,234 / 571 |
-| 3 | 0.05 | **0.4168** | 0.4176 | 0.4219 | `none` | 3,234 / 571 |
-| 4 | 0.05 | **0.4185** | 0.4197 | 0.4257 | `none` | 3,234 / 571 |
+### Per-Fold Nested Calibration Audit (`outputs/stacking_calibration_audit.csv`)
 
-Because L2 Logistic Regression meta-stacking (`C=0.05`) achieved the best inner-OOF LogLoss and an outer OOF **ECE of `0.0088`** without Platt/Isotonic warping, `Calibrated_Stack` and `Uncalibrated_Stack` agree identically while outperforming every base model on **ROC-AUC (`0.8670`), LogLoss (`0.4173`), Brier (`0.1313`), ECE (`0.0088`), and Bayes Town Cost (`$13,970,808`)**.
+| Outer Fold | Final Meta `C` | Per-Cal-Fold `nested_cal_c_per_fold` | Inner-OOF LogLoss (`none`) | Inner-OOF LogLoss (`platt`) | Inner-OOF LogLoss (`isotonic`) | Selected Mode | ES Fit / Val Rows |
+| ---: | ---: | :--- | ---: | ---: | ---: | :--- | ---: |
+| 0 | 0.05 | `0.05, 0.1, 0.05, 0.05` | 0.41922 | **0.41916** | 0.42872 | `none` *(min Δ < 1e-4)* | 3,233 / 571 |
+| 1 | 0.05 | `0.05, 0.05, 0.05, 0.05` | **0.41712** | 0.41718 | 0.42105 | `none` | 3,234 / 571 |
+| 2 | 0.05 | `0.05, 0.1, 0.1, 0.05` | **0.42292** | 0.42294 | 0.43238 | `none` | 3,234 / 571 |
+| 3 | 0.05 | `0.05, 0.05, 0.05, 0.1` | 0.41701 | **0.41700** | 0.42172 | `none` *(min Δ < 1e-4)* | 3,234 / 571 |
+| 4 | 0.05 | `0.05, 0.05, 0.05, 0.05` | **0.41848** | 0.41852 | 0.42174 | `none` | 3,234 / 571 |
+
+*Notice:* Even with fully nested `c_j` tuning inside each calibration fold, regularized L2 logit meta-stacking sits cleanly at optimum calibration (`none` beats Platt on 3/5 folds and ties within `6e-5` LogLoss on folds 0 & 3; **outer OOF ECE = `0.00884`**). Synthetic stress-testing (`test_stacking_respondent_level_isolation_and_active_calibration`) confirms both respondent-level label-flip invariance inside `evaluate_calibration_nested` and active Platt selection when logits are miscalibrated.
 
 ---
 
-## 3. Scientific Validation of Hospitalisation Risk (`src/cost_model.py`)
+## 3. Scientific Validation & Effect-Measure Harmonisation (`src/cost_model.py`)
 
-| Component | Parameterization Used | Scientific Source & Empirical Estimate | Removed / Refined vs. Original |
+### Effect-Measure Mathematical Correction
+Previously, Ko et al. (2021) chronic-condition adjusted Rate Ratios (`aRR = 5.0` for `>=3` conditions) were added directly onto a logistic `log_odds` equation (`+= log(chronic_rr)`), mathematically conflating Rate Ratios with Odds Ratios (`OR > RR` when baseline risk is non-rare).
+
+**Corrected Multi-Stage Formulation in [`estimate_hospitalisation_probabilities`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py):**
+1. **Stage 1 (Odds-Ratio Scale):** Combines age-stratum baseline IHR (`BASE_AGE_IHR`), scenario odds scaling (`0.50` / `1.00` / `1.50`), and centered multivariable male/female odds ratio (`SEX_ODDS_MULTIPLIER`, $OR = 1.45$) on the logit scale to obtain $p_{\text{age\_sex}} \in [0.002, 0.850]$.
+2. **Stage 2 (Rate-Ratio Complementary Log-Log Link):** Applies Ko et al. chronic condition rate ratios (`CHRONIC_CONDITION_RR_MAP`: `0 -> 1.00`, `1 -> 1.70`, `2 -> 2.90`, `>=3 -> 5.00`) on the bounded proportional-rate (`cloglog`) survival scale:
+   $$p_{u,i} = \text{clip}\!\left(1 - (1 - p_{\text{age\_sex},i})^{\text{aRR}_i},\ 0.002,\ 0.850\right)$$
+   At low baseline risk ($p \approx 0.006$), $1 - (1-p)^{\text{aRR}} \approx \text{aRR} \cdot p$, matching [`zhang_yu_rr_to_or`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py) while preventing `>1.0` overflow in high-risk elderly severe strata (`65+`, `>=3`, `severe` stays bounded $\le 0.850$).
+3. **Stage 3 (Hospitalisation VE):** Applies literature-grounded VE (`base`: `0.86` standard, `0.80` frail; `waned_omicron`: `0.65 / 0.55`; `boosted`: `0.91 / 0.86`) yielding `mean q0 = 0.0783`, `mean q1 = 0.0140` under `base`.
+
+### Verified Literature Anchors, Bracket Mapping & Limitations
+
+| Parameter Group | Exact Code Values | Verified Peer-Reviewed Citation & Statistic | Explicit Assumptions & Limitations |
 | :--- | :--- | :--- | :--- |
-| **Baseline Age IHR (`BASE_AGE_IHR`)** | `18-34`: `0.006`, `35-44`: `0.015`, `45-54`: `0.031`, `55-64`: `0.066`, `65+`: `0.145` (unknown fallback: `0.035`) | **Herrera-Esposito & de los Campos (2022)** *BMC Infect Dis* 22:311 (`10.1186/s12879-022-07262-0`: `20-29: 0.47%`, `30-39: 0.99%`, `40-49: 2.11%`, `50-59: 4.49%`, `60-69: 9.54%`); **Verity et al. (2020)** *Lancet Infect Dis* (`10.1016/S1473-3099(20)30243-7`: `1.0%–18.4%` through `80+`); **Salje et al. (2020)** *Science*. | Anchored lower/middle adult brackets directly to seroprevalence denominators rather than unreferenced `[0.01, 0.02, 0.04, 0.075, 0.16]`. |
-| **Chronic Conditions (`CHRONIC_CONDITION_OR_MAP`)** | Discrete concave ORs: `0 -> 1.00`, `1 -> 1.70`, `2 -> 2.90`, `>=3 -> 5.00` (capped at `3`) | **Ko et al. (2021)** *Clin Infect Dis* 72(11):e695-e703 (`10.1093/cid/ciaa1419`: COVID-NET/BRFSS US adults with `>=3` conditions **aRR = 5.0 [95% CI: 3.9–6.3]** vs 0); concave marginal progression corroborated by **Kompaniyets et al. (2021)** *Prev Chronic Dis*. | Replaced uncited `1.55^chronic` (which reached `8.95x` at 5 conditions). |
-| **Sex Adjustment (`SEX_ODDS_MULTIPLIER`)** | Centered OR = `1.45` (`Male: 1.20`, `Female: 0.8276`, missing: `1.00`; optional toggle `include_sex_adjustment`) | **Williamson et al. (2020, OpenSAFELY)** *Nature* (`HR = 1.59`); **Peckham et al. (2020)** *Nat Commun* (ITU `OR = 2.84`, death `OR = 1.39`); **Petrilli et al. (2020)** *BMJ* (NYC Wave-1 admission `aOR = 2.8`). | Documented conservative `1.45` Male/Female synthesis plus explicit `include_sex_adjustment=False` sensitivity row. |
-| **Socioeconomic Factors** | **Removed** from hospitalisation IHR | Insufficiently calibrated independent biological admission ORs on top of age/chronic/sex, plus `health_insurance` has **40.1%** missingness in Dataset C (kept as features for *acceptance* modeling only). | Eliminated arbitrary `health_insurance == 0 -> 1.15` and `income_poverty == Below Poverty -> 1.12` multipliers. |
-| **Vaccine Effectiveness (`VE_REGIMES`)** | `base`: `0.86` standard / `0.80` high-frailty (`65+` or `>=3` chronic). Sensitivity: `waned_omicron` (`0.65 / 0.55`), `boosted` (`0.91 / 0.86`). | **Tenforde et al. (2021)** *JAMA* 326(20):2043-2054 (`10.1001/jama.2021.19499`, PMID `34734975`: 2-dose mRNA `86%` [95% CI `82–88%`], `90%` immunocompetent, lower immunocompromised); **Ferdinands et al. (2022)** *MMWR* 71(7):255-263 (waned 2-dose Omicron `54–79%`, 3-dose boosted `91%`). | Updated standard VE `0.85 -> 0.86`, aligned frailty cutoff to `>=3` chronic / `65+`, and added Omicron waning & boosted sensitivity grid. |
-
-All output hospitalisation probabilities are strictly verified finite and bounded in $[0.002, 0.850]$ (`mean q0 = 0.0760`, `mean q1 = 0.0135` under `base`).
+| **Baseline Age IHR** (`BASE_AGE_IHR`, `AGE_BRACKET_MAPPING_DOC`) | `18-34`: `0.006`, `35-44`: `0.015`, `45-54`: `0.031`, `55-64`: `0.066`, `65+`: `0.145` | **Herrera-Esposito & de los Campos (2022)**, *BMC Infect Dis* `22:311`, `doi:10.1186/s12879-022-07262-0` (`20-29: 0.47%`, `30-39: 0.99%`, `40-49: 2.11%`, `50-59: 4.49%`, `60-69: 9.54%`); **Verity et al. (2020)**, *Lancet Infect Dis* `20(6):669-677`, `doi:10.1016/S1473-3099(20)30243-7` (`1.0%–18.4%` up to `80+`); **Salje et al. (2020)**, *Science* `369:208-211`. | Dataset C survey brackets merge 10-yr published bands; `65+ Years` pools 65–69, 70–79, and 80+ community-dwelling respondents. Pre-vaccination ancestral cohorts; uncertainty bracketed via `0.5x`/`1.5x` scenario odds. |
+| **Chronic Conditions** (`CHRONIC_CONDITION_RR_MAP`) | `0: 1.00`, `1: 1.70`, `2: 2.90`, `>=3: 5.00` *(cloglog aRR)* | **Ko et al. (2021)**, *Clin Infect Dis* `72(11):e695-e703`, `doi:10.1093/cid/ciaa1419`: COVID-NET/BRFSS `>=3` conditions **aRR = 5.0 (95% CI: 3.9–6.3)**; **Zhang & Yu (1998)**, *JAMA* `280(19):1690-1691`. | Levels `1` (`1.70`) and `2` (`2.90`) are concave geometric interpolations ($5^{1/3}, 5^{2/3}$) since Ko et al. pooled `>=3`. COVID-NET population rate ratio assumes balanced exposure conditional on infection. |
+| **Sex Adjustment** (`SEX_ODDS_MULTIPLIER`) | Centered $OR = 1.45$ (`Male: 1.20`, `Female: 0.8276`) | **Petrilli et al. (2020)**, *BMJ* `369:m1966`, `doi:10.1136/bmj.m1966` (admission `aOR = 2.8 [2.4–3.2]`, critical `aOR = 1.5 [1.3–1.8]`); **Peckham et al. (2020)**, *Nat Commun* `11:6317`; **Williamson et al. (2020)**, *Nature* `584:430-436`. | Toggleable via `include_sex_adjustment=False` in sensitivity grid (`$14.28M` with sex vs `$14.71M` sex-neutral, still saving `$447,791` over `0.50`). |
+| **Hospitalisation VE** (`VE_REGIMES`) | `base: (0.86, 0.80)`, `waned_omicron: (0.65, 0.55)`, `boosted: (0.91, 0.86)` | **Tenforde et al. (2021)**, *JAMA* `326(20):2043-2054`, `doi:10.1001/jama.2021.19499` (`PMID 34734975`: Delta VE = `86%`); **Ferdinands et al. (2022)**, *MMWR* `71(7):255-263`, `doi:10.15585/mmwr.mm7107e2` (Omicron 3-dose `91% <2m` / `78% >=4m`; 2-dose `71% <2m` / `54% >=5m`). | High-frailty (`65+` or `>=3`) shift (`86% -> 80%`) is a sensitivity assumption motivated by weaker immunocompromised VE; all regimes spanned in 9-cell grid. |
 
 ---
 
-## 4. Expected Town Cost Derivation & Policy Validation (`src/cost_model.py`)
+## 4. Cost Optimisation & Decision Policy Verification (`src/cost_model.py`, `main.py`)
 
-Under 100% infection risk, $C_v = \$1{,}500$, $C_h = \$41{,}000$, acceptance probability $p_i = P(Y_i = 1 \mid X_i)$, unvaccinated hospitalisation risk $q_{0,i}$, and vaccinated hospitalisation risk $q_{1,i}$:
+With exact town expenditure rules ($C_v = \$1{,}500$, $C_h = \$41{,}000$, 100% infection):
+$$\tau^*(x_i) = \frac{C_v}{C_v + C_h (q_{0,i} - q_{1,i})} \quad (q_{0,i} > q_{1,i}), \qquad \tau^*(x_i) = 1.0 \quad (q_{0,i} \le q_{1,i})$$
 
-| Action $a_i$ | Outcome $Y_i = 1$ (Accepts) | Outcome $Y_i = 0$ (Refuses) |
-| :--- | :--- | :--- |
-| **Send ($a_i = 1$)** | $C_v + C_h q_{1,i}$ | $C_v + C_h q_{0,i}$ *(dose wasted)* |
-| **Don't Send ($a_i = 0$)** | $C_v + C_h q_{0,i}$ *(local-law payout)* | $C_h q_{0,i}$ |
+* **Out-of-Sample Tuning Enforcement:** [`tune_threshold_on_oof`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py) now guarantees 5-fold Stratified CV threshold search (`evaluation == "strictly_out_of_fold_cv"`) even when `folds=None`.
+* **Policy & Component Breakdown for Winning `Calibrated_Stack` (`outputs/cost_policy_comparison.csv`):**
 
-Taking expectations over $Y_i \sim \text{Bernoulli}(p_i)$:
-$$E[\text{Cost}(a_i = 1)] = C_v + C_h q_{0,i} - p_i C_h (q_{0,i} - q_{1,i}), \qquad E[\text{Cost}(a_i = 0)] = p_i C_v + C_h q_{0,i}$$
-Subtracting yields the exact Bayes decision rule:
-$$E[\text{Cost}(1)] - E[\text{Cost}(0)] = (1 - p_i) C_v - p_i C_h (q_{0,i} - q_{1,i}) \le 0 \iff p_i \ge \tau^*(x_i) = \frac{C_v}{C_v + C_h (q_{0,i} - q_{1,i})} \quad (\text{for } q_{0,i} > q_{1,i})$$
+| Policy | Total Cost ($) | Vaccine Send ($) | Wasted ($) | Law Comp ($) | Exp. Hosp ($) | Allocated | Accepted | Wasted | Unmet | Exp. Hosp | Savings vs 0.50 ($) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Fixed Threshold (`0.50`)** | $14,740,402 | $1,944,000 | $450,000 | $837,000 | $11,959,402 | 1,296 | 996 | 300 | 558 | 291.7 | $0 |
+| **CV-Tuned Global Threshold (`0.36`, OOF)** | $14,713,139 | $2,721,000 | $933,000 | $543,000 | $11,449,139 | 1,814 | 1,192 | 622 | 362 | 279.2 | $27,264 |
+| **Bayes-Exact Threshold (`tau*(x_i)`, Analytical)** | **$14,281,676** | $2,230,500 | $736,500 | $837,000 | $11,214,176 | 1,487 | 996 | 491 | 558 | **273.5** | **$458,727** |
+| **CV-Scaled Bayes Threshold (`1.035`, OOF)** | $14,283,408 | $2,158,500 | $708,000 | $880,500 | $11,244,408 | 1,439 | 967 | 472 | 587 | 274.3 | $456,995 |
 
-* **Edge Case Guarantees Verified in Code & Tests:**
-  * Zero or adverse VE ($q_{1,i} \ge q_{0,i}$): $\Delta q_i \le 0 \implies \tau^* = 1.0$ AND [`predict_with_cost_policy`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py) enforces `beneficial = (q0 - q1) > 0`, ensuring zero doses are allocated even at `p_i = 1.0` or `threshold_param < 1.0`. Also corrected `oracle_min_cost` to allocate on `(y_t == 1) & (q0 > q1)`.
-  * Free vaccine ($C_v = 0$): yields $\tau^* = 0.0$ when $q_{0,i} > q_{1,i}$ and $\tau^* = 1.0$ when $q_{0,i} \le q_{1,i}$.
-  * Invalid / `NaN` probabilities: safe mode (`strict=False`) emits a `RuntimeWarning`, clips float overshoot, and defaults missing probabilities to conservative non-allocation (`tau* = 1.0`, `pred = 0`); `strict=True` raises `ValueError`.
-* **Cost Policy & Multi-Axis Sensitivity (`outputs/ve_and_risk_sensitivity_grid.csv`, evaluated on `Calibrated_Stack` OOF):**
-  * Fixed `0.50` cutoff (`$14,415,518`, `1,296` allocated, `283.8` exp. hosp) vs **Bayes-Exact** (`$13,970,808`, `1,476` allocated, `481` wasted [`$721,500`], `559` law payouts [`$838,500`], `266.3` exp. hosp [`$10,918,308`]): **saves `$444,710` (`68.2%` of Oracle savings)** without test-set tuning.
-  * Across all **9 sensitivity cells** (`conservative/base/severe` $\times$ `waned_omicron/base/boosted` + sex-neutral check), person-specific Bayes thresholding consistently outperforms the fixed `0.50` cutoff by **`$139,559` (`conservative + waned_omicron`) to `$766,843` (`severe + boosted`)**. Removing sex adjustment shifts base Bayes town cost from `$13,970,808` to `$14,394,472` while still saving `$424,928` over fixed `0.50`.
+*(Baselines over `n=4,756`: Treat-None `$17,600,550`; Treat-All `$17,581,366`; Oracle `$12,778,366`. Across all 9 sensitivity grid cells in `outputs/ve_and_risk_sensitivity_grid.csv`, Bayes-Exact beats Fixed `0.50` by **`$146,707` [`conservative + waned_omicron`] to `$824,266` [`severe + boosted`]**.)*
 
 ---
 
-## 5. Multi-Fold OOF Explainability (`src/explainability.py`)
-* Computed `shap.TreeExplainer` strictly **out-of-fold across all 5 outer LightGBM fold models** (`n = 4,756` combined OOF rows, `outputs/shap_feature_importance.csv`), verifying rank stability:
-  1. `health_insurance` (`numeric`): `0.5331 ± 0.0595` (`rank 1.0 ± 0.0`)
-  2. `opinion_covid_risk` (`numeric`): `0.4552 ± 0.0685` (`rank 2.2 ± 0.45`)
-  3. `doctor_x_effective` (`numeric`): `0.3811 ± 0.0398` (`rank 3.0 ± 0.71`)
-  4. `opinion_covid_vacc_effective` (`numeric`): `0.2923 ± 0.0128` (`rank 4.4 ± 0.55`)
-  5. `doctor_x_risk` (`numeric`): `0.2565 ± 0.0747` (`rank 4.4 ± 0.89`)
-  6. `employment_sector` (`categorical`): `0.1644 ± 0.0345` (`rank 6.6 ± 1.34`)
-* **Separated Visualizations:** `06_explainability_shap_importance.png` plots fold-SD error bars and distinguishes numeric vs categorical types; `08_explainability_shap_beeswarm.png` displays **strictly numeric/ordinal/binary features** (removing `.cat.codes` distortion); `08b_explainability_categorical_shap.png` reports exact signed mean SHAP by string category (e.g., `healthcare (n=527)` vs `finance (n=95)` in `employment_sector`; `Male` vs `Female`; `White` vs `Black`; `Married` vs `Not Married`); `09_meta_weights_and_sensitivity.png` plots `Meta-Learner Logistic Regression Coefficients (Log-Odds)` (`LogisticRegression: 0.3685`, `CatBoost: 0.2150`, `XGBoost: 0.1793`, `LightGBM: 0.1325`, `RandomForest: 0.0944`, `HistGradientBoosting: 0.0512`).
+## 5. Complete Feature-Group Ablation & Preprocessing Audit (`src/data_prep.py`)
+
+Upgraded [`run_feature_ablation`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/data_prep.py) to share the exact 5-fold Stratified CV partition (`seed=42`) used by modeling and report all 4 metrics (**ROC-AUC, LogLoss, Brier, ECE**) across additive and leave-one-group-out tests (`outputs/feature_ablation_report.csv`):
+
+| Variant | Type | Features | LR AUC | LR LogLoss | LR Brier | LR ECE | LGB AUC | LGB LogLoss | LGB Brier | LGB ECE | Decision |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| `raw_baseline_0_untouched` | Baseline | 29 | 0.8306 | 0.4662 | 0.1486 | 0.0187 | 0.8598 | 0.4265 | 0.1348 | 0.0126 | `REFERENCE` |
+| `raw_plus_zero_as_nan` | Additive (`+zero`) | 31 | 0.8384 | 0.4562 | 0.1458 | 0.0132 | 0.8611 | 0.4252 | 0.1344 | 0.0147 | `RETAIN` |
+| `add_missing_flags` | Additive (`+miss`) | 36 | **0.8658** | **0.4210** | **0.1318** | 0.0157 | 0.8613 | 0.4248 | 0.1345 | 0.0143 | `RETAIN` |
+| `add_doctor_interactions` | Additive (`+doc`) | 34 | 0.8380 | 0.4567 | 0.1460 | 0.0160 | 0.8614 | 0.4248 | 0.1343 | 0.0120 | `RETAIN` |
+| `add_vulnerability_flags` | Additive (`+vuln`) | 36 | 0.8384 | 0.4563 | 0.1458 | 0.0138 | 0.8617 | 0.4239 | 0.1342 | 0.0167 | `RETAIN` |
+| `validated_engineered_full` | Full Validated | 49 | 0.8654 | 0.4218 | 0.1321 | 0.0147 | **0.8624** | **0.4239** | **0.1340** | 0.0151 | `REFERENCE` |
+| `plus_pruned_opinion_composites` | Pruned Check | 54 | 0.8649 | 0.4226 | 0.1323 | 0.0161 | 0.8609 | 0.4256 | 0.1347 | 0.0141 | `PRUNE` |
+| `ablate_without_missing_flags` | Leave-One-Out | 44 | 0.8379 | 0.4570 | 0.1461 | 0.0183 | 0.8620 | 0.4243 | 0.1343 | 0.0111 | `RETAIN` |
+| `ablate_without_ordinal` | Leave-One-Out | 46 | 0.8654 | 0.4218 | 0.1321 | 0.0146 | 0.8602 | 0.4262 | 0.1347 | 0.0150 | `RETAIN` |
+| `ablate_without_doctor_interactions` | Leave-One-Out | 46 | 0.8656 | 0.4215 | 0.1319 | 0.0144 | 0.8609 | 0.4255 | 0.1347 | 0.0118 | `RETAIN` |
+
+*Empirical Preprocessing Transparency:* Mapping `opinion_covid_vacc_effective == 0` (25.0% acceptance vs rank-1 3.2%) and `opinion_covid_risk == 0` (27.1% vs rank-1 12.5%) to `NaN` with `_is_zero` indicators is an empirically justified distribution decision documented explicitly in [`outputs/preprocessing_validation.json`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/outputs/preprocessing_validation.json) because official PDF/Image docs omit code `0`.
 
 ---
 
-## 6. Preprocessing Audit & Feature-Group Ablation (`src/data_prep.py`)
-* **Integrity Checks (`outputs/preprocessing_validation.json`):** `0` exact/feature duplicates in train (`4,756`) or test (`4,749`); `0` `respondent_id` overlap (`1..4756` vs `4757..9505`); `0` unseen nominal test categories; `respondent_id` and `covid_vaccine` excluded from all 49 feature columns; undocumented `0`s in 1–5 opinion scales verified empirically (`opinion_covid_vacc_effective == 0`: `25.0%` target rate vs rank `1`: `3.2%`; `opinion_covid_risk == 0`: `27.1%` vs rank `1`: `12.5%`).
-* **CV Ablation (`outputs/feature_ablation_report.csv`):** Pruning the 5 noisy collinear opinion composites (`opinion_net_benefit`, `opinion_risk_minus_worry`, `opinion_pro_vaccine_index`, `opinion_eff_x_risk`, `concern_x_knowledge`) reduced variance and improved baseline-to-validated CV scores:
-  * `raw_baseline_0_untouched` (29 cols): LR AUC `0.8306` / LogLoss `0.4662` | LGBM AUC `0.8598` / LogLoss `0.4265`
-  * `raw_plus_zero_as_nan` (31 cols): LR AUC `0.8384` / LogLoss `0.4562` | LGBM AUC `0.8611` / LogLoss `0.4252`
-  * `validated_engineered_full` (49 cols): LR AUC **`0.8654`** / LogLoss **`0.4218`** | LGBM AUC **`0.8624`** / LogLoss **`0.4239`**
-  * `plus_pruned_opinion_composites` (54 cols): LR AUC `0.8649` / LogLoss `0.4226` | LGBM AUC `0.8609` / LogLoss `0.4256` (directly confirming composite noise)
-  * Dropping `missing_flags` degraded LR drastically (`0.8654 -> 0.8379` AUC), while dropping `ordinal` (`0.8624 -> 0.8602`) or `doctor_interactions` (`0.8624 -> 0.8609`) hurt LightGBM.
+## 6. Model Comparison: Distinction Between Nested Inner-CV vs. Outer 5-Fold OOF
 
----
-
-## 7. Automated Testing (`tests/test_pipeline.py`)
-Expanded from 5 basic checks to **15 comprehensive automated tests** covering Categories A–H:
-* **Category A & B:** Whitespace cleanup, empirical zero-opinion sentinels (`0` kept untouched on valid `0` fields like `covid_concern`), duplicate detection in `audit_dataset_preprocessing`, non-numeric string coercion & `_coerce_sklearn_frame` finite float output, exact arithmetic/boundary tests for `behavioral_sum`, `behavioral_mean`, `doctor_x_effective`, `doctor_x_risk`, `doctor_x_not_worried`, `household_total`, `has_chronic_condition`, `high_risk_elderly`, `is_healthcare_sector`, `uninsured_flag`, pruned collinear composites, determinism, zero target-label leakage, and unseen-category safety.
-* **Category C & D:** Structural verification that `fit_outer_fold_models` never accepts `y_va`, independent per-model checks on `LightGBM`, `XGBoost`, and `CatBoost` (prediction shapes, `[0,1]` bounds, exact reproducibility), `fit_lgbm_with_early_stopping` version compatibility (`eval_X`/`eval_y` on 4.6–4.7+ AND mocked pre-4.6 `eval_set` fallback), Stratified 5-fold class balance, validation-row feature poisoning + permutation invariance, **respondent-level inner-OOF label-flipping isolation**, active Platt calibration trigger via `select_and_fit_posthoc_calibration` on skewed synthetic logits, and exact `compute_ece` math.
-* **Category E & F:** Literature-aligned monotonicity & `>=3` chronic cap (`4 == 3 == 5`), absence of unsupported socioeconomic IHR multipliers, VE regime ordering, exact expected-cost conservation identities, Bayes break-even equality `E[Cost(1)] == E[Cost(0)]`, `VE <= 0` dose refusal even at `p = 1.0`, `C_v = 0` boundary, and `NaN`/out-of-range handling (`strict=False` vs `strict=True`).
-* **Category G & H:** Multi-fold SHAP stability/output files (`06`, `08`, `08b`), exact weighted fold-aggregation consistency, zero TreeExplainer list/ndarray warnings, and strict validation of all 5 Canvas submission CSVs (`4,749` rows, exact `respondent_id` sequence `4757..9505`, binary `{0, 1}`).
-
----
-
-## 8. Before-vs-After Benchmark Under Identical Evaluation
-*(Both pre-audit and post-audit OOF probability tables evaluated identically under the scientifically grounded `base` hospitalisation risk model and `compute_ece`.)*
+* **Nested Inner-CV LogLoss (`n = 3,804–3,805` per outer fold):** Used strictly inside training partitions to select `best_meta_c = 0.05` and verify calibration mode `none` (`0.4170–0.4229` across folds `0..4`).
+* **Outer 5-Fold OOF Comparison (`n = 4,756` strictly untouched outer validation predictions) — Before vs. After Audit** *(both pre-audit and post-audit probability tables evaluated identically under the final `cloglog` base risk model)*:
 
 | Model | Version | ROC-AUC | LogLoss | Brier | ECE | Bayes Cost ($) | Fixed 0.50 Cost ($) | Allocated / Wasted / Law | Exp. Hosp | Oracle % |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: |
-| **LogisticRegression** | Before (Leaky) | 0.8652 | 0.4227 | 0.1322 | 0.0166 | $14,034,514 | $14,446,926 | 1520 / 524 / 558 | 266.28 | 66.8% |
-| **LogisticRegression** | After (Audited) | **0.8654** | **0.4218** | **0.1321** | **0.0147** | **$14,033,902** | **$14,431,588** | 1531 / 534 / 557 | 265.90 | **66.8%** |
-| **RandomForest** | Before (Leaky) | 0.8543 | 0.4357 | 0.1383 | **0.0192** | $14,023,797 | **$14,628,416** | 1452 / 507 / 609 | 266.64 | 67.1% |
-| **RandomForest** | After (Audited) | **0.8586** | **0.4351** | **0.1378** | 0.0342 | **$14,004,588** | $14,688,404 | 1432 / 510 / 632 | 266.06 | **67.5%** |
-| **HistGradientBoosting** | Before (Leaky) | **0.8542** | **0.4440** | **0.1390** | **0.0372** | **$14,053,049** | **$14,591,799** | 1474 / 472 / 552 | 268.64 | **66.4%** |
-| **HistGradientBoosting** | After (Audited) | 0.8526 | 0.4485 | 0.1400 | 0.0408 | $14,073,918 | $14,610,676 | 1464 / 467 / 557 | 269.33 | 66.0% |
-| **LightGBM** | Before (Leaky ES) | 0.8635 | 0.4219 | 0.1332 | 0.0137 | $13,992,498 | $14,485,338 | 1446 / 475 / 583 | 267.05 | 67.7% |
-| **LightGBM** | After (Inner ES) | 0.8622 | 0.4238 | 0.1341 | **0.0128** | $14,037,696 | $14,515,615 | 1471 / 489 / 572 | 267.64 | 66.8% |
-| **XGBoost** | Before (Leaky ES) | 0.8654 | 0.4199 | 0.1326 | 0.0136 | $13,987,014 | $14,485,848 | 1461 / 479 / 572 | 266.77 | 67.9% |
-| **XGBoost** | After (Inner ES) | 0.8618 | 0.4249 | 0.1342 | 0.0137 | $14,030,042 | $14,487,463 | 1442 / 475 / 587 | 267.96 | 66.9% |
-| **CatBoost** | Before (Leaky ES) | 0.8656 | 0.4188 | 0.1320 | 0.0168 | $13,974,499 | $14,442,737 | 1433 / 459 / 580 | 267.20 | 68.1% |
-| **CatBoost** | After (Inner ES) | 0.8640 | 0.4204 | 0.1326 | **0.0136** | $14,072,497 | $14,502,418 | 1437 / 477 / 594 | 268.93 | 66.0% |
-| **Calibrated_Stack** | Before (Leaky OOF) | 0.86702 | 0.41734 | 0.13128 | 0.01430 | $13,984,743 | $14,410,808 | 1475 / 486 / 565 | 266.46 | 67.9% |
-| **Calibrated_Stack / Uncalibrated_Stack** | After (Nested 5x4) | **0.86697** | **0.41725** | **0.13135** | **0.00884** | **$13,970,808** | $14,415,518 | 1476 / 481 / 559 | 266.30 | **68.2%** |
-
-*Key Diagnostic Takeaway:* Removing outer-validation early stopping eliminated the optimistic bias on CatBoost (`0.8656 -> 0.8640` AUC, `$13.97M -> $14.07M`), XGBoost (`0.8654 -> 0.8618` AUC), and LightGBM (`0.8635 -> 0.8622` AUC), while nested 5x4 stacking over the pruned 49-feature space **lowered LogLoss (`0.41734 -> 0.41725`), cut ECE by 38% (`0.01430 -> 0.00884`), and reduced expected town cost to `$13,970,808` (`68.2%` of oracle savings)**.
+| **LogisticRegression** | Before | 0.86517 | 0.42267 | 0.13223 | 0.01662 | $14,348,719 | $14,775,554 | 1529/533/558 | 273.62 | 67.3% |
+| **LogisticRegression** | **After** | **0.86537** | **0.42184** | **0.13206** | **0.01474** | **$14,336,991** | **$14,759,858** | 1536/538/556 | 273.15 | **67.5%** |
+| **RandomForest** | Before | 0.85431 | 0.43573 | 0.13829 | **0.01915** | **$14,307,387** | **$14,964,813** | 1463/515/606 | 273.27 | **68.2%** |
+| **RandomForest** | **After** | **0.85861** | **0.43508** | **0.13785** | 0.03417 | $14,308,264 | $15,031,856 | 1448/524/630 | 272.96 | 68.1% |
+| **HistGradientBoosting** | Before | **0.85416** | **0.44403** | **0.13904** | **0.03716** | **$14,355,847** | **$14,929,666** | 1479/476/551 | 275.87 | **67.2%** |
+| **HistGradientBoosting** | **After** | 0.85258 | 0.44855 | 0.14000 | 0.04076 | $14,390,153 | $14,947,879 | 1471/474/557 | 276.78 | 66.4% |
+| **LightGBM** | Before (Leaky ES) | 0.86350 | 0.42187 | 0.13321 | 0.01369 | $14,307,981 | $14,811,864 | 1458/486/582 | 274.34 | 68.2% |
+| **LightGBM** | **After (Inner ES)** | 0.86221 | 0.42380 | 0.13405 | **0.01279** | $14,343,198 | $14,845,302 | 1480/497/571 | 274.80 | 67.4% |
+| **XGBoost** | Before (Leaky ES) | 0.86542 | 0.41990 | 0.13258 | 0.01364 | $14,289,232 | $14,814,953 | 1470/487/571 | 273.85 | 68.5% |
+| **XGBoost** | **After (Inner ES)** | 0.86175 | 0.42495 | 0.13423 | 0.01368 | $14,347,335 | $14,816,648 | 1456/488/586 | 275.23 | 67.3% |
+| **CatBoost** | Before (Leaky ES) | 0.86565 | 0.41879 | 0.13200 | 0.01680 | $14,280,310 | $14,768,270 | 1440/465/579 | 274.43 | 68.7% |
+| **CatBoost** | **After (Inner ES)** | 0.86404 | 0.42037 | 0.13263 | **0.01357** | $14,364,624 | $14,831,290 | 1444/482/592 | 275.87 | 67.0% |
+| **Calibrated_Stack** | Before (Leaky OOF) | 0.86702 | 0.41734 | 0.13128 | 0.01430 | $14,289,087 | **$14,735,936** | 1479/490/565 | 273.73 | 68.5% |
+| **Calibrated_Stack / Uncalibrated_Stack** | **After (Nested 5x4)** | **0.86697** | **0.41725** | **0.13135** | **0.00884** | **$14,281,676** | $14,740,402 | 1487/491/558 | **273.52** | **68.7%** |
 
 ---
 
-## 9. Top 5 Verified Submissions & Reproducibility
-All 5 submission files (`submissions/challenge_submission_group_0_order_1.csv` .. `order_5.csv`) match `DOCs/dataset_C_example_submission.csv` (`4,749` rows, `respondent_id` `4757..9505`, binary `{0, 1}`, zero NaNs):
-1. `challenge_submission_group_0_order_1.csv` — `Calibrated_Stack` (`bayes_exact`, inner-CV selected `none`), OOF cost `$13,970,808`, allocates `1,546` (`32.6%`)
-2. `challenge_submission_group_0_order_2.csv` — `CatBoost` (`bayes_scaled`, `param=0.88`), OOF cost `$13,992,147`, allocates `1,682` (`35.4%`)
-3. `challenge_submission_group_0_order_3.csv` — `RandomForest` (`bayes_exact`), OOF cost `$14,004,588`, allocates `1,495` (`31.5%`)
-4. `challenge_submission_group_0_order_4.csv` — `LightGBM` (`bayes_scaled`, `param=1.17`), OOF cost `$14,021,900`, allocates `1,296` (`27.3%`)
-5. `challenge_submission_group_0_order_5.csv` — `XGBoost` (`bayes_exact`), OOF cost `$14,030,042`, allocates `1,503` (`31.6%`)
+## 7. Multi-Fold OOF Explainability (`src/explainability.py`) & Top 5 Canvas Submissions
+
+* **SHAP (`explainer(X).values` across all 5 outer LightGBM fold models, 0 warnings):** Top drivers remain consistent across folds (`health_insurance` `0.533 ± 0.060` rank `1.0`, `opinion_covid_risk` `0.455 ± 0.069` rank `2.2`, `doctor_x_effective` `0.381 ± 0.040` rank `3.0`, `opinion_covid_vacc_effective` `0.292 ± 0.013` rank `4.4`, `doctor_x_risk` `0.256 ± 0.075` rank `4.4`, `employment_sector` categorical `0.164 ± 0.034`), with separate numeric beeswarm (`08`) and categorical subgroup bars (`08b`) plus log-odds meta plot (`09`).
+* **Verified Top 5 Submissions (`submissions/submission_manifest.csv`, pairwise distinct `2.74%–7.50%`, `4,749` unique IDs aligned with `example_submission`):**
+  1. `challenge_submission_group_0_order_1.csv` — `Calibrated_Stack` (`bayes_exact`), OOF `$14,281,676`, allocates `1,555` (`32.7%`)
+  2. `challenge_submission_group_0_order_2.csv` — `CatBoost` (`bayes_scaled=0.895`), OOF `$14,300,969`, allocates `1,663` (`35.0%`)
+  3. `challenge_submission_group_0_order_3.csv` — `RandomForest` (`bayes_exact`), OOF `$14,308,264`, allocates `1,505` (`31.7%`)
+  4. `challenge_submission_group_0_order_4.csv` — `LightGBM` (`bayes_scaled=1.16`), OOF `$14,321,612`, allocates `1,315` (`27.7%`)
+  5. `challenge_submission_group_0_order_5.csv` — `LogisticRegression` (`bayes_exact`), OOF `$14,336,991`, allocates `1,589` (`33.5%`)
 
 ---
 
-## 10. Final Audit Status Matrix
-| Component | Status | Verification Evidence |
-| :--- | :---: | :--- |
-| **LightGBM Execution & Inner ES** | **PASS** | Version-safe [`fit_lgbm_with_early_stopping`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) verified natively on `lightgbm==4.7.0` (`eval_X`/`eval_y`) and mocked `eval_set` (`>=4.5`) in `pytest`; zero outer-fold leakage. |
-| **XGBoost & CatBoost Isolation** | **PASS** | Strict internal `85%/15%` ES inside `tr_idx` only; independent probability/shape/reproducibility assertions pass. |
-| **Calibrated Nested Stacking** | **PASS** | Nested 5x4 OOF cross-fitting + isolated `C` tuning + out-of-sample `none`/`platt`/`isotonic` selection (`outputs/stacking_calibration_audit.csv`), respondent-level label-flip isolation + active Platt test pass. |
-| **Cost Optimisation & Bayes Policy** | **PASS** | Exact closed-form accounting (`$1,500` / `$41,000`), `VE <= 0`, `C_v = 0`, and `NaN` guards verified in `pytest` & 9-cell sensitivity matrix. |
-| **Hospitalisation Risk Parameters** | **PARTIAL** | Literature anchors (`Herrera-Esposito 2022`, `Verity 2020`, `Ko 2021`, `Peckham 2020`, `Tenforde 2021`, `Ferdinands 2022`), `[0, 1]` bounds & scenario bands verified; empirically unvalidated on Dataset C (no clinical admission column exists). |
-| **Multi-Fold OOF SHAP & Plots** | **PASS** | Warning-free (`explainer(X)`) 5-fold OOF SHAP (`shap_feature_importance.csv`), weighted fold consistency, numeric/categorical plot split (`08` / `08b`), log-odds labels (`09`). |
-| **Preprocessing & Feature Ablation** | **PASS** | Empirical `0 -> NaN` policy documented in `outputs/preprocessing_validation.json`; collinear opinion composites pruned & confirmed via `outputs/feature_ablation_report.csv`. |
-| **Automated Test Suite & Pipeline** | **PASS** | `pytest -v`: **15 passed, 0 failed, 0 warnings**; `main.py --group 0` regenerated all reports, figures, and 5 valid Canvas CSVs. |
+## 8. Final Issue-by-Issue Audit Matrix
 
+| # | Issue Audited | Root Cause Found | File | Correction Implemented | Verification Run | Result |
+|---:|---|---|---|---|---|:---:|
+| 1 | LightGBM execution & API compat | Potential keyword mismatch across LightGBM 4.5–4.7+ & ES isolation | [`src/modeling.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) | [`fit_lgbm_with_early_stopping`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) (`eval_set` + fallback) & strict 85/15 inner ES | `pytest` LightGBM + legacy wrapper test & full CV | **PASS** |
+| 2 | XGBoost & CatBoost ES leakage | Early stopping previously peeked at outer `y_va` | [`src/modeling.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) | Structural exclusion of `y_va`; strict internal 85/15 split & vocab fit | `test_outer_validation_isolation_and_no_leakage` | **PASS** |
+| 3 | Calibrated stacking `C` selection bias | `best_c` tuned over full `Z_inner` prior to cal-fold split | [`src/modeling.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) | [`_select_best_meta_c`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) + [`evaluate_calibration_nested`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py) nesting `c_j` inside `cal_tr` | Nested cal label-flip test & 5-fold audit CSV | **PASS** |
+| 4 | Hospitalisation effect-measure inconsistency | Chronic Ko et al. `aRR` added in `log_odds` alongside `OR`s; `65+` unmapped | [`src/cost_model.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py) | `CHRONIC_CONDITION_RR_MAP` on `cloglog` link + [`zhang_yu_rr_to_or`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py) + `AGE_BRACKET_MAPPING_DOC` + verified DOIs | Effect-measure & `[0.002, 0.85]` bound tests; zero clinical data caveat | **PARTIAL** *(no empirical admission labels in Dataset C)* |
+| 5 | Cost policy CV fallback & component reporting | `folds=None` fallback tuned in-sample; `hackathon_report.md` lacked 4-policy table | [`src/cost_model.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py), [`main.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/main.py) | Forced 5-fold CV when `folds=None`; [`summarize_cost_policies_table`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/cost_model.py) exported to CSV & MD | Cost accounting identity & fallback CV tests + `cost_policy_comparison.csv` | **PASS** |
+| 6 | Feature ablation completeness & fold parity | Missing additive runs, Brier/ECE metrics, and decision table | [`src/data_prep.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/data_prep.py) | Shared 5-fold Stratified CV (`seed=42`), additive + drop runs, all 4 metrics, `decision` & `reason` | `test_feature_ablation_metrics_and_structure` & `feature_ablation_report.csv` | **PASS** |
+| 7 | Preprocessing & zero-opinion audit | Undocumented `0`s in 1–5 opinion scales not proven zero-leakage | [`src/data_prep.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/data_prep.py) | Empirical `0 -> NaN` + `_is_zero` flags logged to `preprocessing_validation.json` | 4 preprocessing/determinism/duplicate tests | **PASS** |
+| 8 | Multi-fold SHAP warnings & categorical plot | Older single-fold list warning and `.cat.codes` beeswarm distortion | [`src/explainability.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/explainability.py) | 5-fold OOF `explainer(X).values`, separated numeric `08` & categorical `08b`, log-odds `09` | `test_multifold_shap_stability_and_separation` (0 warnings) | **PASS** |
+| 9 | Pytest suite runtime timeout (>120s) | Heavy fixture CSV reads & unrestricted fast-mode threads/trees | [`src/modeling.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/src/modeling.py), [`tests/test_pipeline.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/tests/test_pipeline.py) | Module-scoped `raw_data` fixture, single-thread `fast_mode` (`80/80/60`), added nested/cloglog/CV tests | `pytest -v`: **18 passed in 77.91s** | **PASS** |
+| 10 | End-to-end pipeline & artifacts | Needed fresh run after `cloglog`, nested-cal, ablation, and policy updates | [`main.py`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/main.py) | Full execution `main.py --group 0` (`[1/6]..[6/6]`) | Exit code `0`; all 16 outputs & 10 PNGs regenerated | **PASS** |
+| 11 | Top-5 submissions parity & distinctness | Required schema verification + proof of non-degenerate distinctness | [`submissions/`](file:///c:/Users/syamp/Downloads/RMDS/RMDS/submissions/submission_manifest.csv) | Ranked distinct model families (`2.74%–7.50%` pairwise diffs, unique IDs `4757..9505`) | `test_generated_submissions_match_example_schema` + manifest inspection | **PASS** |

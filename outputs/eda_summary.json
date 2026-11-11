@@ -98,8 +98,8 @@
       "corr": 0.1351906543543674
     }
   ],
-  "mean_estimated_unvacc_hosp_prob": 0.07600839064136479,
-  "mean_estimated_vacc_hosp_prob": 0.013532668869921298,
+  "mean_estimated_unvacc_hosp_prob": 0.07830699039513325,
+  "mean_estimated_vacc_hosp_prob": 0.013974047344998863,
   "subgroup_rates": {
     "doctor_recc_covid": {
       "0": {

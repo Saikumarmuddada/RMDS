@@ -51,35 +51,50 @@ BASE_AGE_IHR: Dict[str, float] = {
 }
 DEFAULT_UNKNOWN_AGE_IHR: float = 0.035  # Adult mid-distribution prior if age_group is missing
 
-# Discrete chronic medical condition odds ratios anchored to:
-# Ko et al. (2021), "Risk Factors for COVID-19-Associated Hospitalization:
-# COVID-NET and BRFSS", Clin Infect Dis 72(11):e695-e703, doi:10.1093/cid/ciaa1419.
-# US adult adjusted hospitalization rate ratio (aRR) for >=3 chronic conditions vs
-# 0 conditions was 5.0 (95% CI: 3.9-6.3) adjusted for age, sex, and race/ethnicity.
-# Intermediate levels 1 and 2 follow geometric concave scaling (5^(1/3), 5^(2/3))
-# consistent with concave multimorbidity gradients (cf. Kompaniyets et al. 2021,
-# Prev Chronic Dis, inpatient mortality aRR progression), avoiding unbounded
-# exponential extrapolation on counts > 3 (dataset range 0..6, 98.7% <= 2).
-CHRONIC_CONDITION_OR_MAP: Dict[int, float] = {
+# Explicit bracket crosswalk documenting how finer epidemiological age strata map onto Dataset C:
+# Herrera-Esposito & de los Campos (2022) report ancestral multi-country seroprevalence ISR
+# (20-29: 0.47%, 30-39: 0.99%, 40-49: 2.11%, 50-59: 4.49%, 60-69: 9.54%); Verity et al. (2020)
+# report Mainland China early-wave IHR (20-29: 1.0%, 30-39: 3.4%, 40-49: 4.3%, 50-59: 8.2%,
+# 60-69: 11.8%, 70-79: 16.6%, 80+: 18.4%). Because Dataset C pools all elders into one open
+# `65+ Years` bracket (spanning 65-69, 70-79, and 80+ community-dwelling respondents), `0.145`
+# sits centered between Verity 60-69 (11.8%) and 70-79/80+ (16.6-18.4%) and Herrera-Esposito
+# 60-69/70+ gradient, while conservative (0.5x odds) and severe (1.5x odds) scenarios bracket uncertainty.
+AGE_BRACKET_MAPPING_DOC: Dict[str, str] = {
+    "18 - 34 Years": "Spans 20-29 (Herrera-Esposito 0.47%, Verity 1.0%) & lower 30-39 (0.99%); midpoint 0.006.",
+    "35 - 44 Years": "Spans upper 30-39 (0.99%) & lower 40-49 (2.11%, Verity 4.3%); midpoint 0.015.",
+    "45 - 54 Years": "Spans upper 40-49 (2.11%) & lower 50-59 (4.49%, Verity 8.2%); midpoint 0.031.",
+    "55 - 64 Years": "Spans upper 50-59 (4.49%) & lower 60-69 (9.54%, Verity 11.8%); midpoint 0.066.",
+    "65+ Years": "Community-dwelling open bracket pooling 65-69 (~10-12%), 70-79 (Verity 16.6%), and 80+ (Verity 18.4%); composite prior 0.145 bounded via conservative/severe sensitivity.",
+}
+
+# Chronic medical condition adjusted Rate Ratios (aRR, NOT Odds Ratios):
+# Ko et al. (2021), "Risk Factors for Coronavirus Disease 2019 (COVID-19)-Associated
+# Hospitalization: COVID-19-Associated Hospitalization Surveillance Network and Behavioral Risk
+# Factor Surveillance System", Clin Infect Dis 72(11):e695-e703, doi:10.1093/cid/ciaa1419.
+# US adult COVID-NET/BRFSS >=3 conditions vs 0: aRR = 5.0 (95% CI: 3.9-6.3), adjusted for age,
+# sex, race/ethnicity. Levels 1 and 2 use explicit concave geometric interpolation (5^(1/3), 5^(2/3))
+# as modelled parameters (Ko et al. reported category >=3 rather than separate integer counts 1 & 2).
+CHRONIC_CONDITION_RR_MAP: Dict[int, float] = {
     0: 1.00,
     1: 1.70,
     2: 2.90,
-    3: 5.00,  # >= 3 conditions capped cleanly to Ko et al. (2021) >=3 category
+    3: 5.00,  # >= 3 conditions capped to Ko et al. (2021) >=3 category
 }
 
-# Sex adjustment anchored to a conservative synthesis (male-vs-female OR = 1.45,
-# centered near geometric mean 1.0 so overall adult population baseline stays balanced):
-# - Williamson et al. (2020, OpenSAFELY), Nature 584:430-436: male severe mortality HR=1.59 (1.53-1.65)
-# - Peckham et al. (2020), Nat Commun 11:6317: male ITU OR=2.84 (2.06-3.92), death OR=1.39 (1.31-1.47)
-# - Petrilli et al. (2020), BMJ 369:m1966: Wave-1 NYC admission aOR=2.8 (2.4-3.2)
-# Note: Unsupported heuristic multipliers for health_insurance and income_poverty from
-# prior versions were removed (not calibrated independent admission ORs; 40.1% missingness).
+# Sex adjustment on the ODDS RATIO scale (consistent with logistic multivariable aOR):
+# - Petrilli et al. (2020), "Factors associated with hospital admission and critical illness among
+#   5279 people with coronavirus disease 2019 in New York City", BMJ 369:m1966,
+#   doi:10.1136/bmj.m1966: Male hospital admission multivariable aOR = 2.8 (95% CI: 2.4-3.2),
+#   critical illness aOR = 1.5 (95% CI: 1.3-1.8).
+# - Peckham et al. (2020), Nat Commun 11:6317, doi:10.1038/s41467-020-19741-6: male ITU OR = 2.84, death OR = 1.39.
+# - Williamson et al. (2020, OpenSAFELY), Nature 584:430-436, doi:10.1038/s41586-020-2521-4: death HR = 1.59.
+# Conservative synthesis centers OR = 1.45 near geometric mean 1.0 (toggleable via include_sex_adjustment).
 SEX_ODDS_MULTIPLIER: Dict[str, float] = {
     "Male": 1.20,
     "Female": 1.20 / 1.45,  # ~0.8276 (OR Male/Female = 1.45)
 }
 
-# Scenario multipliers capturing epidemic/variant severity uncertainty.
+# Scenario multipliers capturing variant severity, healthcare-threshold, and age-mix uncertainty.
 SCENARIO_ODDS_MULTIPLIER: Dict[str, float] = {
     "conservative": 0.50,
     "base": 1.00,
@@ -89,11 +104,15 @@ SCENARIO_ODDS_MULTIPLIER: Dict[str, float] = {
 # Vaccine effectiveness against COVID-19 hospitalisation given infection:
 # Tuple: (standard_adult_ve, high_frailty_ve_65plus_or_3plus_chronic)
 # Primary anchors:
-# - Tenforde et al. (2021), JAMA 326(20):2043-2054, doi:10.1001/jama.2021.19499
-#   (PMID 34734975): 2-dose mRNA hospitalisation VE = 86% overall (95% CI: 82-88%),
-#   90% immunocompetent, reduced in elderly/immunocompromised strata (~80%).
-# - Ferdinands et al. (2022), MMWR 71(7):255-263 (VISION Network, Delta & Omicron):
-#   3-dose boosted VE = 91%, waned 2-dose Omicron VE = 54-79% (~65% midpoint).
+# - Tenforde et al. (2021), "Association Between mRNA Vaccination and COVID-19 Hospitalization and
+#   Disease Severity", JAMA 326(20):2043-2054, doi:10.1001/jama.2021.19499 (PMID 34734975):
+#   Delta hospitalization VE = 86% overall (>120d Moderna 85%, Pfizer 64%); lower in
+#   immunocompromised subgroups (motivating illustrative high-frailty sensitivity = 80%).
+# - Ferdinands et al. (2022), "Waning 2-Dose and 3-Dose Effectiveness of mRNA Vaccines Against
+#   COVID-19-Associated Emergency Department and Urgent Care Encounters and Hospitalizations Among
+#   Adults During Periods of Delta and Omicron Variant Predominance - VISION Network",
+#   MMWR 71(7):255-263, doi:10.15585/mmwr.mm7107e2: Omicron hospitalization VE was 91% (<2m 3-dose),
+#   78% (>=4m 3-dose), 71% (<2m 2-dose), and 54% (>=5m 2-dose); `waned_omicron` uses 65%/55% midpoint.
 VE_REGIMES: Dict[str, Tuple[float, float]] = {
     "waned_omicron": (0.65, 0.55),
     "base": (0.86, 0.80),
@@ -110,31 +129,41 @@ HOSPITALISATION_SCIENTIFIC_SOURCES = {
             "Verity et al. (2020), Lancet Infect Dis 20(6):669-677, doi:10.1016/S1473-3099(20)30243-7",
             "Salje et al. (2020), Science 369:208-211, doi:10.1126/science.abc3517",
         ],
-        "limitation": "Pre-vaccination ancestral SARS-CoV-2 studies use 10-yr brackets mapped onto Dataset C 18-34 and 65+ groups.",
+        "statistic_type": "Infection-Hospitalisation / Infection-Severe Probability (IHR / ISR)",
+        "bracket_mapping": AGE_BRACKET_MAPPING_DOC,
+        "limitation": "Pre-vaccination ancestral SARS-CoV-2 seroprevalence/Wave-1 cohorts across non-US & multi-country settings; 5-yr offset requires bracket midpoint interpolation and 65+ weighting.",
     },
     "chronic_conditions": {
         "citations": [
             "Ko et al. (2021), Clin Infect Dis 72(11):e695-e703, doi:10.1093/cid/ciaa1419",
-            "Kompaniyets et al. (2021), Prev Chronic Dis 18:210123",
+            "Zhang & Yu (1998), JAMA 280(19):1690-1691, doi:10.1001/jama.280.19.1690",
         ],
-        "estimate": ">=3 conditions vs 0: aRR = 5.0 (95% CI: 3.9-6.3) adjusted for age, sex, race/ethnicity.",
-        "limitation": "Population-rate aRR approximated as odds scaling within bracket IHR; requires infection independence consistent with 100% infection assumption.",
+        "statistic_type": "Adjusted Rate Ratio (aRR = 5.0, 95% CI 3.9-6.3 for >=3 vs 0 conditions)",
+        "transformation": "Applied on the complementary log-log (cloglog) proportional-rate scale p_u = 1 - (1 - p_base)^aRR rather than silently treating aRR as an odds ratio; preserves RR agreement at low p_base while staying strictly bounded in (0, 1) without >1.0 overflow in elderly strata. Levels 1 & 2 (1.70, 2.90) are explicit concave geometric assumptions (5^(1/3), 5^(2/3)).",
+        "limitation": "COVID-NET/BRFSS US adult population rate ratio mixes exposure and severity; 1-2 count interpolation is uncalibrated on Dataset C.",
     },
     "sex": {
         "citations": [
-            "Peckham et al. (2020), Nat Commun 11:6317",
-            "Williamson et al. (2020, OpenSAFELY), Nature 584:430-436",
-            "Petrilli et al. (2020), BMJ 369:m1966",
+            "Petrilli et al. (2020), BMJ 369:m1966, doi:10.1136/bmj.m1966",
+            "Peckham et al. (2020), Nat Commun 11:6317, doi:10.1038/s41467-020-19741-6",
+            "Williamson et al. (2020, OpenSAFELY), Nature 584:430-436, doi:10.1038/s41586-020-2521-4",
         ],
-        "estimate": "Conservative centered OR = 1.45 Male vs Female; excluded socioeconomic multipliers due to insufficient multivariable calibration and 40.1% missing health_insurance.",
+        "statistic_type": "Multivariable Odds Ratio (OR = 1.45 conservative Male/Female synthesis on log-odds scale)",
+        "limitation": "Petrilli NYC Wave-1 admission aOR (2.8) exceeded global critical/mortality ratios; conservative centered 1.45 OR tested via include_sex_adjustment=False sensitivity.",
     },
     "vaccine_effectiveness": {
         "citations": [
             "Tenforde et al. (2021), JAMA 326(20):2043-2054, doi:10.1001/jama.2021.19499 (PMID 34734975)",
-            "Ferdinands et al. (2022), MMWR 71(7):255-263",
+            "Ferdinands et al. (2022), MMWR 71(7):255-263, doi:10.15585/mmwr.mm7107e2",
         ],
-        "estimate": "Base VE_hosp = 86% (95% CI 82-88%) overall, 80% high-frailty; sensitivity covers 65%/55% waned Omicron and 91%/86% boosted.",
+        "statistic_type": "Test-negative Hospitalisation VE (1 - aOR_hospitalisation)",
+        "estimate": "Tenforde Delta VE = 86%; Ferdinands Omicron 3-dose VE = 91% (<2m) to 78% (>=4m) and 2-dose 71% (<2m) to 54% (>=5m). High-frailty (65+ or >=3 chronic) downward shift (80%/55%/86%) is an explicit sensitivity assumption grounded in weaker immunocompromised protection.",
     },
+    "population_compatibility": (
+        "CRITICAL CAVEAT: Parameters synthesize US COVID-NET/VISION/NYC cohorts (2020-2022, ancestral/Delta/Omicron) "
+        "and multi-country seroprevalence meta-analyses (2020-2021). Dataset C itself contains NO empirical COVID-19 "
+        "hospitalisation column; (q0, q1) are explicit modelled epidemiological estimates, NOT clinically validated risk scores."
+    ),
 }
 
 RiskScenario = Literal["conservative", "base", "severe"]
@@ -239,6 +268,18 @@ def compute_ece(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> flo
     return float(ece)
 
 
+def zhang_yu_rr_to_or(
+    rr: np.ndarray | float,
+    p0: np.ndarray | float,
+) -> np.ndarray:
+    """Convert Risk/Rate Ratio RR to Odds Ratio OR at baseline risk p0 (Zhang & Yu, JAMA 1998)."""
+    r = np.asarray(rr, dtype=np.float64)
+    b = np.clip(np.asarray(p0, dtype=np.float64), 1e-6, 1.0 - 1e-6)
+    # Exact Zhang & Yu relation OR = RR * (1 - p0) / (1 - p0 * RR), bounded safely near unity
+    adjusted_denom = np.maximum(1.0 - np.minimum(b * r, 0.99), 1e-6)
+    return (r * (1.0 - b)) / adjusted_denom
+
+
 def estimate_hospitalisation_probabilities(
     df: pd.DataFrame,
     scenario: RiskScenario = "base",
@@ -248,10 +289,13 @@ def estimate_hospitalisation_probabilities(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Estimate individual hospitalisation probabilities under 100% infection risk.
 
-    Modelled probabilities use peer-reviewed age IHRs (Herrera-Esposito & de los
-    Campos 2022; Verity et al. 2020), chronic condition adjustment (Ko et al. 2021),
-    modest sex odds scaling (Peckham et al. 2020; Williamson et al. 2020), and
-    mRNA vaccine effectiveness (Tenforde et al. 2021; Ferdinands et al. 2022).
+    Effect-measure pipeline:
+      1. Odds-ratio stage (log-odds scale): age-stratum IHR prior + scenario severity odds +
+         optional multivariable sex OR -> p_base in (0, 1).
+      2. Rate-ratio stage (complementary log-log proportional-rate link): applies Ko et al. (2021)
+         chronic aRR via p_u = 1 - (1 - p_base)^aRR, keeping effect measures consistent without
+         equating aRR to OR or overflowing 1.0 in elderly severe strata.
+      3. Vaccine effectiveness: Tenforde et al. (2021) / Ferdinands et al. (2022) relative reduction.
     """
     if scenario not in SCENARIO_ODDS_MULTIPLIER:
         raise ValueError(f"Unsupported risk scenario: {scenario}")
@@ -272,26 +316,27 @@ def estimate_hospitalisation_probabilities(
         age_clean = pd.Series(["Missing"] * n, dtype="string")
         base_ihr = np.full(n, DEFAULT_UNKNOWN_AGE_IHR, dtype=np.float64)
 
+    # Stage 1: OR-scale adjustments (age prior + scenario odds + centered sex OR)
     log_odds = _logit(base_ihr) + np.log(SCENARIO_ODDS_MULTIPLIER[scenario])
+    if include_sex_adjustment and "sex" in df.columns:
+        sex_clean = df["sex"].astype("string").str.strip()
+        sex_mult = sex_clean.map(SEX_ODDS_MULTIPLIER).fillna(1.00).to_numpy(dtype=np.float64)
+        log_odds += np.log(sex_mult)
+    p_age_sex = np.clip(_sigmoid(log_odds), MIN_MODELLED_IHR, MAX_MODELLED_IHR)
 
-    # Chronic medical conditions: map NaN/negative -> 0, counts >= 3 capped to 3 (Ko et al. 2021)
+    # Stage 2: Chronic condition aRR transformed via bounded cloglog survival link: 1 - (1 - p0)^aRR
     if "number_chronic_med_conditions" in df.columns:
         chronic_raw = pd.to_numeric(df["number_chronic_med_conditions"], errors="coerce")
         chronic_bucket = chronic_raw.fillna(0).clip(lower=0, upper=3).round().astype(int)
     else:
         chronic_bucket = pd.Series(0, index=df.index, dtype=int)
-    chronic_or = chronic_bucket.map(CHRONIC_CONDITION_OR_MAP).fillna(1.0).to_numpy(dtype=np.float64)
-    log_odds += np.log(chronic_or)
+    chronic_rr = (
+        chronic_bucket.map(CHRONIC_CONDITION_RR_MAP).fillna(1.0).to_numpy(dtype=np.float64)
+    )
+    p_unvacc_raw = 1.0 - np.power(np.clip(1.0 - p_age_sex, 1e-9, 1.0), chronic_rr)
+    p_unvacc = np.clip(p_unvacc_raw, MIN_MODELLED_IHR, MAX_MODELLED_IHR)
 
-    # Sex adjustment (optional toggle for sensitivity verification)
-    if include_sex_adjustment and "sex" in df.columns:
-        sex_clean = df["sex"].astype("string").str.strip()
-        sex_mult = sex_clean.map(SEX_ODDS_MULTIPLIER).fillna(1.00).to_numpy(dtype=np.float64)
-        log_odds += np.log(sex_mult)
-
-    p_unvacc = np.clip(_sigmoid(log_odds), MIN_MODELLED_IHR, MAX_MODELLED_IHR)
-
-    # Vaccine effectiveness against hospitalisation given infection
+    # Stage 3: Vaccine effectiveness against hospitalisation given infection
     std_ve, frail_ve = VE_REGIMES[ve_regime]
     is_high_frailty = (age_clean == "65+ Years").to_numpy(dtype=bool) | (
         chronic_bucket.to_numpy() >= 3
@@ -558,43 +603,46 @@ def tune_threshold_on_oof(
                 best_c, best_s = c, float(s)
         return best_s
 
-    if folds is not None:
-        pred_gt = np.zeros_like(y_t)
-        pred_bs = np.zeros_like(y_t)
-        g_params, s_params = [], []
-        for f in np.unique(folds):
-            tr_mask = folds != f
-            va_mask = folds == f
-            t_fold = _best_global(
-                y_t[tr_mask], probs[tr_mask], p_hosp_unvacc[tr_mask], p_hosp_vacc[tr_mask]
-            )
-            s_fold = _best_scale(
-                y_t[tr_mask], probs[tr_mask], p_hosp_unvacc[tr_mask], p_hosp_vacc[tr_mask]
-            )
-            g_params.append(t_fold)
-            s_params.append(s_fold)
-            pred_gt[va_mask] = (probs[va_mask] >= t_fold).astype(np.int64)
-            pred_bs[va_mask] = predict_with_cost_policy(
-                probs[va_mask],
-                p_hosp_unvacc[va_mask],
-                p_hosp_vacc[va_mask],
-                policy="bayes",
-                threshold_param=s_fold,
-                cfg=cfg,
-            )
-        best_g_param = float(np.median(g_params))
-        best_b_scale = float(np.median(s_params))
+    if folds is None:
+        from sklearn.model_selection import StratifiedKFold
+
+        skf_fallback = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        folds_arr = np.zeros(len(y_t), dtype=np.int64)
+        for f_idx, (_, va_idx) in enumerate(skf_fallback.split(probs.reshape(-1, 1), y_t)):
+            folds_arr[va_idx] = f_idx
     else:
-        best_g_param = _best_global(y_t, probs, p_hosp_unvacc, p_hosp_vacc)
-        pred_gt = (probs >= best_g_param).astype(np.int64)
-        best_b_scale = _best_scale(y_t, probs, p_hosp_unvacc, p_hosp_vacc)
-        pred_bs = predict_with_cost_policy(
-            probs, p_hosp_unvacc, p_hosp_vacc, policy="bayes", threshold_param=best_b_scale, cfg=cfg
+        folds_arr = np.asarray(folds, dtype=np.int64)
+
+    pred_gt = np.zeros_like(y_t)
+    pred_bs = np.zeros_like(y_t)
+    g_params, s_params = [], []
+    for f in np.unique(folds_arr):
+        tr_mask = folds_arr != f
+        va_mask = folds_arr == f
+        t_fold = _best_global(
+            y_t[tr_mask], probs[tr_mask], p_hosp_unvacc[tr_mask], p_hosp_vacc[tr_mask]
         )
+        s_fold = _best_scale(
+            y_t[tr_mask], probs[tr_mask], p_hosp_unvacc[tr_mask], p_hosp_vacc[tr_mask]
+        )
+        g_params.append(t_fold)
+        s_params.append(s_fold)
+        pred_gt[va_mask] = (probs[va_mask] >= t_fold).astype(np.int64)
+        pred_bs[va_mask] = predict_with_cost_policy(
+            probs[va_mask],
+            p_hosp_unvacc[va_mask],
+            p_hosp_vacc[va_mask],
+            policy="bayes",
+            threshold_param=s_fold,
+            cfg=cfg,
+        )
+    best_g_param = float(np.median(g_params))
+    best_b_scale = float(np.median(s_params))
 
     results["global_tuned"] = {
         "policy": "global",
         "param": best_g_param,
+        "evaluation": "strictly_out_of_fold_cv",
         "breakdown": compute_town_cost(y_t, pred_gt, p_hosp_unvacc, p_hosp_vacc, cfg),
     }
 
@@ -605,6 +653,7 @@ def tune_threshold_on_oof(
     results["bayes_exact"] = {
         "policy": "bayes",
         "param": 1.0,
+        "evaluation": "analytical_zero_tuning",
         "breakdown": compute_town_cost(y_t, pred_bayes, p_hosp_unvacc, p_hosp_vacc, cfg),
     }
 
@@ -612,10 +661,48 @@ def tune_threshold_on_oof(
     results["bayes_scaled"] = {
         "policy": "bayes",
         "param": best_b_scale,
+        "evaluation": "strictly_out_of_fold_cv",
         "breakdown": compute_town_cost(y_t, pred_bs, p_hosp_unvacc, p_hosp_vacc, cfg),
     }
 
     return results
+
+
+def summarize_cost_policies_table(policy_results: dict) -> pd.DataFrame:
+    """Build complete cost-component breakdown across decision policies."""
+    fixed_cost = policy_results["global_0.5"]["breakdown"].total_cost
+    order = [
+        ("global_0.5", "Fixed Threshold (0.50)"),
+        ("global_tuned", "CV-Tuned Global Threshold (Out-of-Fold)"),
+        ("bayes_exact", "Person-Specific Bayes Threshold (Analytical)"),
+        ("bayes_scaled", "CV-Scaled Bayes Threshold (Out-of-Fold)"),
+    ]
+    rows = []
+    for key, label in order:
+        entry = policy_results[key]
+        bd: CostBreakdown = entry["breakdown"]
+        rows.append(
+            {
+                "policy_key": key,
+                "policy_name": label,
+                "param": float(entry["param"]),
+                "evaluation_mode": entry.get("evaluation", "fixed_cutoff"),
+                "vaccines_allocated": bd.vaccines_allocated,
+                "vaccines_accepted": bd.vaccines_accepted,
+                "wasted_vaccines": bd.wasted_vaccines,
+                "law_compensation_count": bd.law_compensation_count,
+                "expected_hospitalisations": bd.expected_hospitalisations,
+                "accepted_vaccine_cost": bd.accepted_vaccine_cost,
+                "wasted_vaccine_cost": bd.wasted_vaccine_cost,
+                "vaccine_send_cost": bd.vaccine_send_cost,
+                "law_penalty_cost": bd.law_penalty_cost,
+                "hospitalisation_cost": bd.hospitalisation_cost,
+                "total_cost": bd.total_cost,
+                "savings_vs_treat_none": bd.savings_vs_treat_none,
+                "savings_vs_fixed_0.5": fixed_cost - bd.total_cost,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def evaluate_cost_sensitivity_grid(

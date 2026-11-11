@@ -250,12 +250,14 @@ def _fit_base_models_on_train_only(
     Notice y_va is NOT an argument to this function, structurally preventing any
     validation-fold label leakage into preprocessing, early stopping, or model training.
     """
-    n_iter_lgb = 600 if fast_mode else 1800
-    n_iter_xgb = 600 if fast_mode else 1800
-    n_iter_cb = 400 if fast_mode else 1200
-    es_rounds_lgb = 50 if fast_mode else 80
-    es_rounds_cb = 40 if fast_mode else 60
-    rf_trees = 150 if fast_mode else 500
+    n_iter_lgb = 80 if fast_mode else 1800
+    n_iter_xgb = 80 if fast_mode else 1800
+    n_iter_cb = 60 if fast_mode else 1200
+    es_rounds_lgb = 15 if fast_mode else 80
+    es_rounds_cb = 15 if fast_mode else 60
+    rf_trees = 40 if fast_mode else 500
+    hgb_iter = 60 if fast_mode else 350
+    job_count = 1 if fast_mode else -1
 
     # Prepare sklearn-safe frame
     X_tr_sk = _coerce_sklearn_frame(X_tr, num_cols, cat_cols)
@@ -289,7 +291,7 @@ def _fit_base_models_on_train_only(
                     max_depth=14,
                     min_samples_leaf=8,
                     max_features="sqrt",
-                    n_jobs=-1,
+                    n_jobs=job_count,
                     random_state=seed,
                 ),
             ),
@@ -310,7 +312,7 @@ def _fit_base_models_on_train_only(
                 "clf",
                 HistGradientBoostingClassifier(
                     learning_rate=0.04,
-                    max_iter=350,
+                    max_iter=hgb_iter,
                     max_leaf_nodes=31,
                     min_samples_leaf=30,
                     l2_regularization=1.5,
@@ -349,7 +351,7 @@ def _fit_base_models_on_train_only(
         reg_alpha=0.5,
         reg_lambda=2.0,
         random_state=seed,
-        n_jobs=-1,
+        n_jobs=job_count,
         verbose=-1,
     )
     fit_lgbm_with_early_stopping(
@@ -379,7 +381,7 @@ def _fit_base_models_on_train_only(
         eval_metric="logloss",
         early_stopping_rounds=es_rounds_lgb,
         random_state=seed,
-        n_jobs=-1,
+        n_jobs=job_count,
     )
     xgb_model.fit(X_fit_cat, y_bfit, eval_set=[(X_es_cat, y_bes)], verbose=False)
     val_preds["XGBoost"] = xgb_model.predict_proba(X_va_cat)[:, 1]
@@ -398,6 +400,7 @@ def _fit_base_models_on_train_only(
         l2_leaf_reg=5.0,
         eval_metric="Logloss",
         random_seed=seed,
+        thread_count=job_count,
         allow_writing_files=False,
         verbose=False,
     )
@@ -451,6 +454,105 @@ def _fit_calibrator(mode: str, raw_probs: np.ndarray, y: np.ndarray, seed: int):
     raise ValueError(f"Unsupported calibration mode: {mode}")
 
 
+def _select_best_meta_c(
+    Z: np.ndarray,
+    y: np.ndarray,
+    cv_ids: np.ndarray,
+    seed: int,
+    c_grid: Tuple[float, ...] = (0.05, 0.1, 0.25, 0.5, 1.0),
+) -> Tuple[float, np.ndarray]:
+    """Select LogisticRegression meta regularization C strictly out-of-fold over (Z, y)."""
+    unique_folds = np.unique(cv_ids)
+    best_c, best_c_ll = float(c_grid[0]), float("inf")
+    oof_by_c: Dict[float, np.ndarray] = {}
+    for c_val in c_grid:
+        c_oof = np.zeros(len(y), dtype=np.float64)
+        for fid in unique_folds:
+            tr_m = cv_ids != fid
+            va_m = cv_ids == fid
+            m_clf = LogisticRegression(C=float(c_val), max_iter=1000, random_state=seed)
+            m_clf.fit(Z[tr_m], y[tr_m])
+            c_oof[va_m] = m_clf.predict_proba(Z[va_m])[:, 1]
+        oof_by_c[float(c_val)] = c_oof
+        ll = float(log_loss(y, c_oof))
+        if ll < best_c_ll:
+            best_c, best_c_ll = float(c_val), ll
+    return best_c, oof_by_c[best_c]
+
+
+def evaluate_calibration_nested(
+    Z_inner: np.ndarray,
+    y_tr: np.ndarray,
+    inner_fold_ids: np.ndarray,
+    seed: int,
+    c_grid: Tuple[float, ...] = (0.05, 0.1, 0.25, 0.5, 1.0),
+    *,
+    min_improvement: float = 1e-4,
+) -> dict:
+    """Nested calibration evaluation where meta-C and calibrator fit NEVER see cal_va labels.
+
+    For each inner fold j:
+      1. Select c_j and out-of-fold sub-meta scores strictly inside cal_tr (inner_fold_ids != j).
+      2. Fit LogisticRegression(C=c_j) on cal_tr and predict untouched cal_va -> nested_raw_oof[cal_va].
+      3. Fit each candidate calibrator (none, platt, isotonic) on (sub_meta_tr, y_tr[cal_tr])
+         and score strictly out-of-sample on (nested_raw_oof[cal_va], y_tr[cal_va]).
+    """
+    unique_folds = np.unique(inner_fold_ids)
+    cal_modes = ("none", "platt", "isotonic")
+    nested_raw_oof = np.zeros(len(y_tr), dtype=np.float64)
+    cal_oof_by_mode = {m: np.zeros(len(y_tr), dtype=np.float64) for m in cal_modes}
+    nested_c_per_fold: List[float] = []
+
+    for j in unique_folds:
+        cal_tr = inner_fold_ids != j
+        cal_va = inner_fold_ids == j
+        Z_tr_j, y_tr_j = Z_inner[cal_tr], y_tr[cal_tr]
+        tr_sub_ids = inner_fold_ids[cal_tr]
+        if len(np.unique(tr_sub_ids)) < 2:
+            skf_sub = StratifiedKFold(n_splits=2, shuffle=True, random_state=seed + int(j))
+            tr_sub_ids = np.zeros(len(y_tr_j), dtype=int)
+            for s_idx, (_, s_va) in enumerate(skf_sub.split(Z_tr_j, y_tr_j)):
+                tr_sub_ids[s_va] = s_idx
+
+        c_j, sub_meta_oof_tr = _select_best_meta_c(
+            Z_tr_j, y_tr_j, tr_sub_ids, seed + int(j), c_grid
+        )
+        nested_c_per_fold.append(c_j)
+
+        meta_j = LogisticRegression(C=c_j, max_iter=1000, random_state=seed + int(j))
+        meta_j.fit(Z_tr_j, y_tr_j)
+        raw_va_j = meta_j.predict_proba(Z_inner[cal_va])[:, 1]
+        nested_raw_oof[cal_va] = raw_va_j
+
+        for mode in cal_modes:
+            cal_j = _fit_calibrator(mode, sub_meta_oof_tr, y_tr_j, seed + int(j))
+            cal_oof_by_mode[mode][cal_va] = _apply_calibrator(cal_j, mode, raw_va_j)
+
+    cal_eval = {m: float(log_loss(y_tr, cal_oof_by_mode[m])) for m in cal_modes}
+    best_cal_mode = "none"
+    best_cal_ll = cal_eval["none"]
+    for mode in ("platt", "isotonic"):
+        if cal_eval[mode] < best_cal_ll - min_improvement:
+            best_cal_ll = cal_eval[mode]
+            best_cal_mode = mode
+
+    final_calibrator = _fit_calibrator(best_cal_mode, nested_raw_oof, y_tr, seed)
+    reason = (
+        f"Identity calibration retained: nested OOF LogLoss none={cal_eval['none']:.5f} <= "
+        f"platt={cal_eval['platt']:.5f}, isotonic={cal_eval['isotonic']:.5f}"
+        if best_cal_mode == "none"
+        else f"Selected {best_cal_mode}: improved nested OOF LogLoss from {cal_eval['none']:.5f} to {best_cal_ll:.5f}"
+    )
+    return {
+        "best_cal_mode": best_cal_mode,
+        "final_calibrator": final_calibrator,
+        "cal_eval": cal_eval,
+        "nested_raw_oof": nested_raw_oof,
+        "nested_c_per_fold": nested_c_per_fold,
+        "reason": reason,
+    }
+
+
 def select_and_fit_posthoc_calibration(
     meta_inner_oof: np.ndarray,
     y_tr: np.ndarray,
@@ -459,7 +561,7 @@ def select_and_fit_posthoc_calibration(
     *,
     min_improvement: float = 1e-4,
 ) -> Tuple[str, object, Dict[str, float]]:
-    """Select calibration mode out-of-sample on inner folds and fit strictly on (meta_inner_oof, y_tr)."""
+    """Select calibration mode out-of-sample on fixed inner OOF scores and fit on y_tr."""
     cal_modes = ("none", "platt", "isotonic")
     cal_eval: Dict[str, float] = {}
     unique_folds = np.unique(inner_fold_ids)
@@ -549,27 +651,15 @@ def fit_outer_fold_models(
         else None
     )
 
-    # 3. Inner CV selection of meta-learner C over uncontaminated Z_inner
-    c_grid = [0.05, 0.1, 0.25, 0.5, 1.0]
-    best_c, best_c_ll = 0.25, float("inf")
-    oof_by_c: Dict[float, np.ndarray] = {}
-    for c_val in c_grid:
-        c_oof = np.zeros(len(y_tr), dtype=np.float64)
-        for j in range(inner_folds):
-            tr_m = inner_fold_ids != j
-            va_m = inner_fold_ids == j
-            m_clf = LogisticRegression(C=c_val, max_iter=1000, random_state=fold_seed)
-            m_clf.fit(Z_inner[tr_m], y_tr[tr_m])
-            c_oof[va_m] = m_clf.predict_proba(Z_inner[va_m])[:, 1]
-        oof_by_c[c_val] = c_oof
-        ll = float(log_loss(y_tr, c_oof))
-        if ll < best_c_ll:
-            best_c_ll, best_c = ll, c_val
+    # 3. Nested calibration evaluation (c_j tuned strictly inside cal_tr, zero cal_va leakage)
+    c_grid = (0.05, 0.1, 0.25, 0.5, 1.0)
+    cal_res = evaluate_calibration_nested(Z_inner, y_tr, inner_fold_ids, fold_seed, c_grid=c_grid)
+    best_cal_mode = cal_res["best_cal_mode"]
+    final_calibrator = cal_res["final_calibrator"]
+    cal_eval = cal_res["cal_eval"]
 
-    # Strictly inner OOF meta probabilities (used ONLY inside tr_idx for isolated calibration check)
-    meta_inner_oof = oof_by_c[best_c]
-
-    # Fit final outer-fold meta-learner on complete clean Z_inner
+    # 4. Select final outer-fold meta-C strictly inside complete clean Z_inner -> fit meta_full
+    best_c, _ = _select_best_meta_c(Z_inner, y_tr, inner_fold_ids, fold_seed, c_grid=c_grid)
     meta_full = LogisticRegression(C=best_c, max_iter=1000, random_state=fold_seed)
     meta_full.fit(Z_inner, y_tr)
     raw_stack_va = meta_full.predict_proba(Z_va_outer)[:, 1]
@@ -577,10 +667,6 @@ def fit_outer_fold_models(
         meta_full.predict_proba(Z_te_outer)[:, 1] if Z_te_outer is not None else None
     )
 
-    # 4. Isolated calibration selection & out-of-sample evaluation inside tr_idx
-    best_cal_mode, final_calibrator, cal_eval = select_and_fit_posthoc_calibration(
-        meta_inner_oof, y_tr, inner_fold_ids, fold_seed
-    )
     cal_stack_va = _apply_calibrator(final_calibrator, best_cal_mode, raw_stack_va)
     cal_stack_te = (
         _apply_calibrator(final_calibrator, best_cal_mode, raw_stack_te)
@@ -598,7 +684,9 @@ def fit_outer_fold_models(
         "cal_stack_test": cal_stack_te,
         "meta_coefs": meta_full.coef_[0].copy(),
         "best_meta_c": best_c,
+        "nested_c_per_fold": cal_res["nested_c_per_fold"],
         "selected_calibrator": best_cal_mode,
+        "cal_selection_reason": cal_res["reason"],
         "inner_cal_logloss": cal_eval,
         "inner_oof_size": len(y_tr),
     }
@@ -709,12 +797,14 @@ def train_and_evaluate_all_models(
             {
                 "outer_fold": fold_idx,
                 "best_meta_c": fold_res["best_meta_c"],
+                "nested_cal_c_per_fold": ",".join(str(c) for c in fold_res["nested_c_per_fold"]),
                 "selected_calibrator": fold_res["selected_calibrator"],
                 "inner_oof_logloss_none": fold_res["inner_cal_logloss"]["none"],
                 "inner_oof_logloss_platt": fold_res["inner_cal_logloss"]["platt"],
                 "inner_oof_logloss_isotonic": fold_res["inner_cal_logloss"]["isotonic"],
                 "es_fit_rows": fold_res["outer_base"]["es_split_sizes"]["fit"],
                 "es_val_rows": fold_res["outer_base"]["es_split_sizes"]["es"],
+                "cal_selection_reason": fold_res["cal_selection_reason"],
             }
         )
 

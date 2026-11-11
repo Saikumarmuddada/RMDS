@@ -18,15 +18,16 @@ RMDS/
 ├── notebooks/
 │   └── RMDS_Hackathon_Dataset_C.ipynb   # Google Colab & Jupyter ready walkthrough notebook
 ├── tests/
-│   └── test_pipeline.py                 # 11 pytest checks (preprocessing, leakage, cost, SHAP, schema)
+│   └── test_pipeline.py                 # 18 pytest checks (preprocessing, nested cal, cloglog, cost, SHAP, schema)
 ├── outputs/
 │   ├── figures/                         # 10 publication-grade PNG charts (01–09 + 08b)
 │   ├── model_comparison.csv             # Full nested CV metrics across all 8 models & cost breakdowns
+│   ├── cost_policy_comparison.csv       # 4-policy cost component table (0.50, CV-tuned, Bayes-Exact/Scaled)
 │   ├── sensitivity_matrix.csv           # Cross-scenario cost & oracle savings matrix
 │   ├── ve_and_risk_sensitivity_grid.csv # IHR scenario x VE regime x Sex sensitivity matrix
-│   ├── stacking_calibration_audit.csv   # Inner OOF LogLoss calibration selection audit (none/platt/isotonic)
+│   ├── stacking_calibration_audit.csv   # Nested OOF LogLoss calibration selection audit (none/platt/isotonic)
 │   ├── preprocessing_validation.json    # Automated dataset integrity & zero-sentinel audit
-│   ├── feature_ablation_report.csv      # Leakage-free CV feature-group ablation benchmark
+│   ├── feature_ablation_report.csv      # Leakage-free 5-fold CV feature-group ablation (AUC, LogLoss, Brier, ECE)
 │   ├── shap_feature_importance.csv      # 5-fold OOF SHAP rankings with fold SD stability
 │   └── hackathon_report.md              # Generated summary report
 ├── TECHNICAL_AUDIT_REPORT.md            # Complete technical audit, literature grounding & Before/After comparison
@@ -34,10 +35,10 @@ RMDS/
 ├── PRESENTATION.md                      # 6-slide presentation deck outline with figures & metrics
 ├── submissions/
 │   ├── challenge_submission_group_0_order_1.csv  # #1 Calibrated_Stack (Bayes-Exact; inner CV selected mode='none')
-│   ├── challenge_submission_group_0_order_2.csv  # #2 CatBoost (Bayes-Scaled 0.88)
+│   ├── challenge_submission_group_0_order_2.csv  # #2 CatBoost (Bayes-Scaled 0.895)
 │   ├── challenge_submission_group_0_order_3.csv  # #3 RandomForest (Bayes-Exact)
-│   ├── challenge_submission_group_0_order_4.csv  # #4 LightGBM (Bayes-Scaled 1.17)
-│   ├── challenge_submission_group_0_order_5.csv  # #5 XGBoost (Bayes-Exact)
+│   ├── challenge_submission_group_0_order_4.csv  # #4 LightGBM (Bayes-Scaled 1.16)
+│   ├── challenge_submission_group_0_order_5.csv  # #5 LogisticRegression (Bayes-Exact)
 │   └── submission_manifest.csv
 └── main.py                              # Single CLI entrypoint
 ```

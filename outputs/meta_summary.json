@@ -1,62 +1,72 @@
 {
   "meta_weights": {
-    "LogisticRegression": 0.36850457601378794,
-    "RandomForest": 0.09438057058018123,
-    "HistGradientBoosting": 0.051249208062947325,
-    "LightGBM": 0.13248731256725346,
-    "XGBoost": 0.17932848329308917,
-    "CatBoost": 0.2150082451064562
+    "LogisticRegression": 0.3685045760137873,
+    "RandomForest": 0.09438057058017542,
+    "HistGradientBoosting": 0.05124920806294577,
+    "LightGBM": 0.13248731256725205,
+    "XGBoost": 0.17932848329309198,
+    "CatBoost": 0.21500824510646202
   },
   "calibration_audit": [
     {
       "outer_fold": 0,
       "best_meta_c": 0.05,
+      "nested_cal_c_per_fold": "0.05,0.1,0.05,0.05",
       "selected_calibrator": "none",
-      "inner_oof_logloss_none": 0.4190596693163074,
-      "inner_oof_logloss_platt": 0.4205766632211297,
-      "inner_oof_logloss_isotonic": 0.43032862957841517,
+      "inner_oof_logloss_none": 0.4192198174278485,
+      "inner_oof_logloss_platt": 0.4191608236658613,
+      "inner_oof_logloss_isotonic": 0.42871912616326896,
       "es_fit_rows": 3233,
-      "es_val_rows": 571
+      "es_val_rows": 571,
+      "cal_selection_reason": "Identity calibration retained: nested OOF LogLoss none=0.41922 <= platt=0.41916, isotonic=0.42872"
     },
     {
       "outer_fold": 1,
       "best_meta_c": 0.05,
+      "nested_cal_c_per_fold": "0.05,0.05,0.05,0.05",
       "selected_calibrator": "none",
-      "inner_oof_logloss_none": 0.4171171009093726,
-      "inner_oof_logloss_platt": 0.4193046177633915,
-      "inner_oof_logloss_isotonic": 0.42215660801020344,
+      "inner_oof_logloss_none": 0.41711710090937265,
+      "inner_oof_logloss_platt": 0.41718153189849166,
+      "inner_oof_logloss_isotonic": 0.4210536095768109,
       "es_fit_rows": 3234,
-      "es_val_rows": 571
+      "es_val_rows": 571,
+      "cal_selection_reason": "Identity calibration retained: nested OOF LogLoss none=0.41712 <= platt=0.41718, isotonic=0.42105"
     },
     {
       "outer_fold": 2,
       "best_meta_c": 0.05,
+      "nested_cal_c_per_fold": "0.05,0.1,0.1,0.05",
       "selected_calibrator": "none",
-      "inner_oof_logloss_none": 0.42279209552379776,
-      "inner_oof_logloss_platt": 0.42429897201436423,
-      "inner_oof_logloss_isotonic": 0.4302875751494375,
+      "inner_oof_logloss_none": 0.422917138129085,
+      "inner_oof_logloss_platt": 0.42293869269558476,
+      "inner_oof_logloss_isotonic": 0.43237679905967424,
       "es_fit_rows": 3234,
-      "es_val_rows": 571
+      "es_val_rows": 571,
+      "cal_selection_reason": "Identity calibration retained: nested OOF LogLoss none=0.42292 <= platt=0.42294, isotonic=0.43238"
     },
     {
       "outer_fold": 3,
       "best_meta_c": 0.05,
+      "nested_cal_c_per_fold": "0.05,0.05,0.05,0.1",
       "selected_calibrator": "none",
-      "inner_oof_logloss_none": 0.4167562890871047,
-      "inner_oof_logloss_platt": 0.41759026724364867,
-      "inner_oof_logloss_isotonic": 0.4219239609889701,
+      "inner_oof_logloss_none": 0.41700712748894003,
+      "inner_oof_logloss_platt": 0.41700431429014356,
+      "inner_oof_logloss_isotonic": 0.42172499126482765,
       "es_fit_rows": 3234,
-      "es_val_rows": 571
+      "es_val_rows": 571,
+      "cal_selection_reason": "Identity calibration retained: nested OOF LogLoss none=0.41701 <= platt=0.41700, isotonic=0.42172"
     },
     {
       "outer_fold": 4,
       "best_meta_c": 0.05,
+      "nested_cal_c_per_fold": "0.05,0.05,0.05,0.05",
       "selected_calibrator": "none",
-      "inner_oof_logloss_none": 0.4184838640242978,
-      "inner_oof_logloss_platt": 0.4196670845957035,
-      "inner_oof_logloss_isotonic": 0.42568593516032077,
+      "inner_oof_logloss_none": 0.4184838640242981,
+      "inner_oof_logloss_platt": 0.4185225553859254,
+      "inner_oof_logloss_isotonic": 0.4217430776705873,
       "es_fit_rows": 3234,
-      "es_val_rows": 571
+      "es_val_rows": 571,
+      "cal_selection_reason": "Identity calibration retained: nested OOF LogLoss none=0.41848 <= platt=0.41852, isotonic=0.42174"
     }
   ]
 }

@@ -12,24 +12,30 @@ import pytest
 
 from src.config import DATASET_C_CONFIG, SUBMISSIONS_DIR, DatasetConfig
 from src.cost_model import (
+    MAX_MODELLED_IHR,
     bayes_optimal_thresholds,
     compute_ece,
     compute_town_cost,
     estimate_hospitalisation_probabilities,
     expected_decision_cost,
     predict_with_cost_policy,
+    summarize_cost_policies_table,
+    tune_threshold_on_oof,
+    zhang_yu_rr_to_or,
 )
 from src.data_prep import (
     audit_dataset_preprocessing,
     engineer_features,
     get_feature_columns,
     load_raw_datasets,
+    run_feature_ablation,
 )
 from src.explainability import _compute_and_plot_shap
 from src.modeling import (
     _coerce_sklearn_frame,
     _fit_base_models_on_train_only,
     _make_sklearn_onehot_preprocessor,
+    evaluate_calibration_nested,
     fit_lgbm_with_early_stopping,
     fit_outer_fold_models,
     select_and_fit_posthoc_calibration,
@@ -37,13 +43,19 @@ from src.modeling import (
 )
 
 
+@pytest.fixture(scope="module")
+def raw_data():
+    """Load Dataset C raw splits once per test module without mutation."""
+    return load_raw_datasets(DATASET_C_CONFIG)
+
+
 # ---------------------------------------------------------------------------
 # Category A & B: Preprocessing and Feature Engineering Integrity
 # ---------------------------------------------------------------------------
 
 
-def test_data_cleaning_fixes_whitespace_and_zero_opinions():
-    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+def test_data_cleaning_fixes_whitespace_and_zero_opinions(raw_data):
+    raw_train, raw_test, _ = raw_data
     feat_train = engineer_features(raw_train, DATASET_C_CONFIG)
     feat_test = engineer_features(raw_test, DATASET_C_CONFIG)
 
@@ -75,8 +87,8 @@ def test_data_cleaning_fixes_whitespace_and_zero_opinions():
         assert pruned_col not in feat_train.columns
 
 
-def test_preprocessing_determinism_no_target_leakage_and_unseen_safety():
-    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+def test_preprocessing_determinism_no_target_leakage_and_unseen_safety(raw_data):
+    raw_train, raw_test, _ = raw_data
     feat_tr_1 = engineer_features(raw_train, DATASET_C_CONFIG)
     feat_tr_2 = engineer_features(raw_train, DATASET_C_CONFIG)
     feat_test = engineer_features(raw_test, DATASET_C_CONFIG)
@@ -111,8 +123,8 @@ def test_preprocessing_determinism_no_target_leakage_and_unseen_safety():
     assert pd.isna(fe_unseen.loc[fe_unseen.index[0], "age_ordinal"])
 
 
-def test_preprocessing_duplicates_types_and_missing_value_imputation():
-    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+def test_preprocessing_duplicates_types_and_missing_value_imputation(raw_data):
+    raw_train, raw_test, _ = raw_data
     sample_tr = raw_train.iloc[:40].copy()
     sample_te = raw_test.iloc[:15].copy()
 
@@ -145,8 +157,8 @@ def test_preprocessing_duplicates_types_and_missing_value_imputation():
     assert np.all(np.isfinite(transformed))
 
 
-def test_engineered_feature_calculations_and_boundaries():
-    raw_train, _, _ = load_raw_datasets(DATASET_C_CONFIG)
+def test_engineered_feature_calculations_and_boundaries(raw_data):
+    raw_train, _, _ = raw_data
     rows = raw_train.iloc[:3].copy().reset_index(drop=True)
 
     # Row 0: age 55-64 (ordinal 3.0) + 1 chronic -> high_risk_elderly=1; doctor_recc=1 + missing eff -> 3.0
@@ -195,18 +207,55 @@ def test_engineered_feature_calculations_and_boundaries():
     assert fe.loc[2, "high_risk_elderly"] == pytest.approx(0.0)
 
 
+def test_feature_ablation_metrics_and_structure(raw_data):
+    raw_train, _, _ = raw_data
+    pos = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 1].iloc[:65]
+    neg = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 0].iloc[:135]
+    sub_df = pd.concat([pos, neg], axis=0).reset_index(drop=True)
+
+    ablation = run_feature_ablation(sub_df, DATASET_C_CONFIG, n_folds=2, random_state=42)
+    required_cols = {
+        "variant",
+        "feature_group",
+        "evaluation_type",
+        "reference_variant",
+        "description",
+        "n_features",
+        "lr_roc_auc",
+        "lr_log_loss",
+        "lr_brier",
+        "lr_ece",
+        "lgb_roc_auc",
+        "lgb_log_loss",
+        "lgb_brier",
+        "lgb_ece",
+        "lr_auc_delta_vs_ref",
+        "lr_logloss_delta_vs_ref",
+        "lgb_auc_delta_vs_ref",
+        "lgb_logloss_delta_vs_ref",
+        "decision",
+        "reason",
+    }
+    assert required_cols.issubset(set(ablation.columns))
+    assert "add_missing_flags" in ablation["variant"].values
+    assert "ablate_without_ordinal" in ablation["variant"].values
+    assert "plus_pruned_opinion_composites" in ablation["variant"].values
+    for col in ("lr_roc_auc", "lr_log_loss", "lr_brier", "lr_ece", "lgb_roc_auc", "lgb_log_loss", "lgb_brier", "lgb_ece"):
+        assert np.all(np.isfinite(ablation[col].to_numpy()))
+
+
 # ---------------------------------------------------------------------------
 # Category C & D: Validation Leakage, Stacking Isolation & Calibration Tests
 # ---------------------------------------------------------------------------
 
 
-def test_outer_validation_isolation_and_no_leakage():
+def test_outer_validation_isolation_and_no_leakage(raw_data):
     """Verify structurally and empirically that outer validation rows/labels never leak."""
     # Structural verification: fit_outer_fold_models cannot receive y_va
     sig = inspect.signature(fit_outer_fold_models)
     assert "y_va" not in sig.parameters
 
-    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+    raw_train, raw_test, _ = raw_data
     # Stratified 220-row subset for rapid multi-model leakage test
     pos = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 1].iloc[:75]
     neg = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 0].iloc[:145]
@@ -248,6 +297,7 @@ def test_outer_validation_isolation_and_no_leakage():
     assert es_sizes["fit"] + es_sizes["es"] == len(X_tr)
     assert res_a["inner_oof_size"] == len(X_tr)
     assert res_a["selected_calibrator"] in {"none", "platt", "isotonic"}
+    assert len(res_a["nested_c_per_fold"]) == 2
 
     # Outer permutation invariance: shuffling X_va rows yields identically shuffled predictions
     perm = np.arange(len(X_va_clean))[::-1]
@@ -257,12 +307,12 @@ def test_outer_validation_isolation_and_no_leakage():
     np.testing.assert_allclose(res_a["cal_stack_val"][perm], res_perm["cal_stack_val"], atol=1e-12)
 
 
-def test_boosting_models_independent_execution_api_compat_and_reproducibility():
+def test_boosting_models_independent_execution_api_compat_and_reproducibility(raw_data):
     """Verify LightGBM, XGBoost, and CatBoost individually, eval_set fallback, Stratification, and determinism."""
     from lightgbm import LGBMClassifier
     from sklearn.model_selection import StratifiedKFold
 
-    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+    raw_train, raw_test, _ = raw_data
     pos = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 1].iloc[:75]
     neg = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 0].iloc[:150]
     sub_df = pd.concat([pos, neg], axis=0).reset_index(drop=True)
@@ -314,11 +364,11 @@ def test_boosting_models_independent_execution_api_compat_and_reproducibility():
         assert abs(float(np.mean(y_full[va_idx])) - base_rate) < 0.002
 
 
-def test_stacking_respondent_level_isolation_and_active_calibration():
-    """Verify respondent-level OOF isolation inside stacking and active Platt calibration selection."""
+def test_stacking_respondent_level_isolation_and_active_calibration(raw_data):
+    """Verify respondent-level OOF & nested calibration isolation plus active Platt selection."""
     from sklearn.model_selection import StratifiedKFold
 
-    raw_train, _, _ = load_raw_datasets(DATASET_C_CONFIG)
+    raw_train, _, _ = raw_data
     pos = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 1].iloc[:60]
     neg = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 0].iloc[:120]
     sub_df = pd.concat([pos, neg], axis=0).reset_index(drop=True)
@@ -359,6 +409,23 @@ def test_stacking_respondent_level_isolation_and_active_calibration():
     assert best_mode == "platt"
     assert calibrator is not None
     assert cal_eval["platt"] < cal_eval["none"] - 0.05
+
+    # Nested calibration audit: flipping validation labels strictly inside cal_va (fold 0)
+    # MUST NOT alter fold 0's chosen regularization C or nested_raw_oof[fold == 0] predictions.
+    Z_syn = np.column_stack([z_true, 0.8 * z_true + rng.normal(0.0, 0.4, size=600)])
+    inner_ids = np.repeat(np.arange(3), 200)
+    y_flip_f0 = y_syn.copy()
+    cal_va_0 = inner_ids == 0
+    y_flip_f0[cal_va_0] = 1 - y_flip_f0[cal_va_0]
+
+    nest_clean = evaluate_calibration_nested(Z_syn, y_syn, inner_ids, seed=42)
+    nest_flipped = evaluate_calibration_nested(Z_syn, y_flip_f0, inner_ids, seed=42)
+    assert nest_clean["nested_c_per_fold"][0] == nest_flipped["nested_c_per_fold"][0]
+    np.testing.assert_allclose(
+        nest_clean["nested_raw_oof"][cal_va_0],
+        nest_flipped["nested_raw_oof"][cal_va_0],
+        atol=1e-12,
+    )
 
 
 def test_ece_metric_and_calibration_bounds():
@@ -433,6 +500,39 @@ def test_hospitalisation_model_literature_constraints_and_missing_inputs():
     _, pv_base = estimate_hospitalisation_probabilities(df_se, ve_regime="base")
     _, pv_wane = estimate_hospitalisation_probabilities(df_se, ve_regime="waned_omicron")
     assert pv_boost[0] < pv_base[0] < pv_wane[0]
+
+
+def test_hospitalisation_effect_measure_consistency_and_bounds():
+    # Low-risk stratum: cloglog RR model agrees closely with p0 * RR and Zhang-Yu conversion
+    df_young = pd.DataFrame(
+        {
+            "age_group": ["18 - 34 Years", "18 - 34 Years"],
+            "number_chronic_med_conditions": [0, 3],
+            "sex": ["Female", "Female"],
+        }
+    )
+    pu_young, _ = estimate_hospitalisation_probabilities(
+        df_young, scenario="base", include_sex_adjustment=False
+    )
+    rr_ratio = pu_young[1] / pu_young[0]
+    assert 4.5 <= rr_ratio <= 5.05  # true aRR = 5.0 behavior at low baseline risk
+
+    # Extreme severe 65+ >=3 stratum remains smoothly bounded below MAX_MODELLED_IHR without overflow
+    df_extreme = pd.DataFrame(
+        {
+            "age_group": ["65+ Years"],
+            "number_chronic_med_conditions": [3],
+            "sex": ["Male"],
+        }
+    )
+    pu_ext, pv_ext = estimate_hospitalisation_probabilities(df_extreme, scenario="severe")
+    assert 0.50 < pu_ext[0] <= MAX_MODELLED_IHR
+    assert 0.0 < pv_ext[0] < pu_ext[0]
+
+    # Zhang-Yu utility agrees with exact OR conversion formula at low risk and stays bounded at high risk
+    expected_zy_or = 5.0 * (1.0 - 0.006) / (1.0 - 5.0 * 0.006)
+    assert zhang_yu_rr_to_or(5.0, 0.006) == pytest.approx(expected_zy_or, abs=1e-6)
+    assert np.isfinite(zhang_yu_rr_to_or(5.0, 0.25))
 
 
 # ---------------------------------------------------------------------------
@@ -528,13 +628,35 @@ def test_cost_edge_cases_zero_or_adverse_ve_and_invalid_probs():
     assert tau_free[1] == pytest.approx(1.0)
 
 
+def test_cost_policy_fallback_cv_and_summary_table():
+    rng = np.random.default_rng(123)
+    y_t = rng.binomial(1, 0.3, size=100)
+    probs = np.clip(0.15 + 0.5 * y_t + rng.normal(0.0, 0.1, size=100), 0.01, 0.99)
+    pu = np.full(100, 0.06)
+    pv = np.full(100, 0.01)
+
+    # Even when folds=None, tune_threshold_on_oof MUST enforce internal out-of-fold CV
+    pol = tune_threshold_on_oof(y_t, probs, pu, pv, cfg=DATASET_C_CONFIG, folds=None)
+    assert pol["global_tuned"]["evaluation"] == "strictly_out_of_fold_cv"
+    assert pol["bayes_scaled"]["evaluation"] == "strictly_out_of_fold_cv"
+    assert pol["bayes_exact"]["evaluation"] == "analytical_zero_tuning"
+
+    tbl = summarize_cost_policies_table(pol)
+    assert len(tbl) == 4
+    assert {"policy_name", "vaccines_accepted", "savings_vs_fixed_0.5"}.issubset(set(tbl.columns))
+    for _, row in tbl.iterrows():
+        assert row["vaccine_send_cost"] + row["law_penalty_cost"] + row["hospitalisation_cost"] == pytest.approx(
+            row["total_cost"], abs=1e-6
+        )
+
+
 # ---------------------------------------------------------------------------
 # Category G: Multi-Fold SHAP Explainability & Stability Tests
 # ---------------------------------------------------------------------------
 
 
-def test_multifold_shap_stability_and_separation(tmp_path: Path):
-    raw_train, raw_test, _ = load_raw_datasets(DATASET_C_CONFIG)
+def test_multifold_shap_stability_and_separation(raw_data, tmp_path: Path):
+    raw_train, raw_test, _ = raw_data
     pos = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 1].iloc[:80]
     neg = raw_train[raw_train[DATASET_C_CONFIG.target_col] == 0].iloc[:160]
     sub_df = pd.concat([pos, neg], axis=0).reset_index(drop=True)
@@ -587,13 +709,21 @@ def test_generated_submissions_match_example_schema():
     assert manifest_path.exists(), "Run main.py before verifying generated submissions."
     manifest = pd.read_csv(manifest_path)
     assert len(manifest) == 5
+    assert list(manifest["oof_total_cost"]) == sorted(manifest["oof_total_cost"])
 
+    pred_signatures = set()
     for idx in range(1, 6):
         sub_path = SUBMISSIONS_DIR / f"challenge_submission_group_0_order_{idx}.csv"
         assert sub_path.exists(), f"Missing submission: {sub_path}"
         sub = pd.read_csv(sub_path)
         assert list(sub.columns) == list(example_sub.columns)
         assert len(sub) == len(example_sub) == 4749
+        assert sub["respondent_id"].is_unique
         assert np.array_equal(sub["respondent_id"].values, example_sub["respondent_id"].values)
         assert not sub["covid_vaccine"].isna().any()
         assert set(sub["covid_vaccine"].unique()).issubset({0, 1})
+        positives = int(sub["covid_vaccine"].sum())
+        assert 0 < positives < len(sub)
+        pred_signatures.add(tuple(sub["covid_vaccine"].tolist()))
+
+    assert len(pred_signatures) >= 4

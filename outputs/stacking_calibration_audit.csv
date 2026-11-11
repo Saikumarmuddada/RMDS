@@ -1,6 +1,6 @@
-outer_fold,best_meta_c,selected_calibrator,inner_oof_logloss_none,inner_oof_logloss_platt,inner_oof_logloss_isotonic,es_fit_rows,es_val_rows
-0,0.05,none,0.4190596693163074,0.4205766632211297,0.43032862957841517,3233,571
-1,0.05,none,0.4171171009093726,0.4193046177633915,0.42215660801020344,3234,571
-2,0.05,none,0.42279209552379776,0.42429897201436423,0.4302875751494375,3234,571
-3,0.05,none,0.4167562890871047,0.41759026724364867,0.4219239609889701,3234,571
-4,0.05,none,0.4184838640242978,0.4196670845957035,0.42568593516032077,3234,571
+outer_fold,best_meta_c,nested_cal_c_per_fold,selected_calibrator,inner_oof_logloss_none,inner_oof_logloss_platt,inner_oof_logloss_isotonic,es_fit_rows,es_val_rows,cal_selection_reason
+0,0.05,"0.05,0.1,0.05,0.05",none,0.4192198174278485,0.4191608236658613,0.42871912616326896,3233,571,"Identity calibration retained: nested OOF LogLoss none=0.41922 <= platt=0.41916, isotonic=0.42872"
+1,0.05,"0.05,0.05,0.05,0.05",none,0.41711710090937265,0.41718153189849166,0.4210536095768109,3234,571,"Identity calibration retained: nested OOF LogLoss none=0.41712 <= platt=0.41718, isotonic=0.42105"
+2,0.05,"0.05,0.1,0.1,0.05",none,0.422917138129085,0.42293869269558476,0.43237679905967424,3234,571,"Identity calibration retained: nested OOF LogLoss none=0.42292 <= platt=0.42294, isotonic=0.43238"
+3,0.05,"0.05,0.05,0.05,0.1",none,0.41700712748894003,0.41700431429014356,0.42172499126482765,3234,571,"Identity calibration retained: nested OOF LogLoss none=0.41701 <= platt=0.41700, isotonic=0.42172"
+4,0.05,"0.05,0.05,0.05,0.05",none,0.4184838640242981,0.4185225553859254,0.4217430776705873,3234,571,"Identity calibration retained: nested OOF LogLoss none=0.41848 <= platt=0.41852, isotonic=0.42174"

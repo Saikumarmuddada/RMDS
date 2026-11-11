@@ -70,15 +70,15 @@ Operational/conduct rules for participants (own laptops only, silent phones, no 
 4. **Multi-Model Training & Nested Cross-Fitted Stacking (`src/modeling.py`)**
    * Trained 6 distinct model families inside a leakage-free nested 5-fold outer / 4-fold inner Stratified CV (`RANDOM_SEED = 42`) with internal `85%/15%` early stopping inside active training folds only.
    * Built strictly uncontaminated inner OOF logit predictions for `Uncalibrated_Stack` and `Calibrated_Stack` (selecting `C = 0.05` and verifying calibration out-of-sample across `none`, `platt`, `isotonic` — selecting `none` across all 5 folds).
-   * Ranked models by Bayes-exact OOF town cost (`Calibrated_Stack` / `Uncalibrated_Stack` achieved #1 ROC-AUC `0.8670`, lowest LogLoss `0.4173`, lowest Brier `0.1313`, lowest ECE `0.0088`, and lowest town cost `\$13,970,808`, capturing `68.2%` of theoretical oracle savings).
+   * Ranked models by Bayes-exact OOF town cost (`Calibrated_Stack` / `Uncalibrated_Stack` achieved #1 ROC-AUC `0.8670`, lowest LogLoss `0.4173`, lowest Brier `0.1313`, lowest ECE `0.0088`, and lowest town cost `\$14,281,676`, capturing `68.7%` of theoretical oracle savings).
 
 5. **Explainable AI & Embellished Visuals (`src/explainability.py`)**
    * Computed out-of-fold SHAP values across all 5 outer LightGBM fold models (`outputs/shap_feature_importance.csv` with fold SD stability).
    * Generated 10 figures (`outputs/figures/01_*.png` through `09_*.png` + `08b`) separating numeric beeswarm (`08`) from true categorical subgroup SHAP (`08b`) and labeling meta-learner log-odds coefficients (`09`).
 
 6. **Submission Export & Automated Testing (`src/modeling.py`, `tests/test_pipeline.py`)**
-   * Exported the top 5 diverse model families (`Calibrated_Stack`, `CatBoost`, `RandomForest`, `LightGBM`, `XGBoost`) into `submissions/challenge_submission_group_<X>_order_<1..5>.csv` verified against `dataset_C_example_submission.csv`.
-   * Built 15 `pytest` tests covering Categories A–H: data cleaning & duplicate/dtype checks, zero-opinion handling & feature bounds, version-safe LightGBM/XGBoost/CatBoost isolation, respondent-level stacking & calibration isolation, scientific risk constraints, exact cost math & edge cases (`VE <= 0`, `C_v = 0`, `NaN`), multi-fold SHAP stability, and submission schema alignment.
+   * Exported the top 5 diverse model families (`Calibrated_Stack`, `CatBoost`, `RandomForest`, `LightGBM`, `LogisticRegression`) into `submissions/challenge_submission_group_<X>_order_<1..5>.csv` verified against `dataset_C_example_submission.csv`.
+   * Built 18 `pytest` tests covering Categories A–L: data cleaning & duplicate/dtype checks, zero-opinion handling & feature bounds, version-safe LightGBM/XGBoost/CatBoost isolation, respondent-level nested stacking & calibration isolation, `cloglog` / Zhang-Yu effect-measure consistency & risk constraints, exact cost math & edge cases (`VE <= 0`, `C_v = 0`, `NaN`, CV fallback), additive + drop feature ablation, multi-fold SHAP stability, and distinct submission schema alignment.
 
 ---
 

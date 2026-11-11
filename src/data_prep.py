@@ -235,16 +235,22 @@ def run_feature_ablation(
     n_folds: int = 5,
     random_state: int = 42,
 ) -> pd.DataFrame:
-    """Evaluate feature groups via leakage-free CV (LogisticRegression & inner-ES LightGBM)."""
+    """Evaluate feature groups via leakage-free CV (LogisticRegression & inner-ES LightGBM).
+
+    Uses identical StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    outer splits (matching ``src/modeling.py``) and reports ROC-AUC, LogLoss, Brier Score,
+    and ECE across baseline, additive group additions, pruned composites, and leave-one-group-out drops.
+    """
     from lightgbm import LGBMClassifier
     from sklearn.compose import ColumnTransformer
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import log_loss, roc_auc_score
+    from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
     from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+    from src.cost_model import compute_ece
     from src.modeling import fit_lgbm_with_early_stopping
 
     y = raw_train[cfg.target_col].to_numpy(dtype=int)
@@ -290,18 +296,40 @@ def run_feature_ablation(
         ],
     }
 
-    def _eval(df_sub: pd.DataFrame, label: str) -> dict:
+    group_descriptions = {
+        "raw_baseline_0_untouched": "Raw normalized features without zero-to-NaN mapping or engineered features.",
+        "raw_plus_zero_as_nan": "Raw normalized features + undocumented opinion=0 mapped to NaN + _is_zero flags.",
+        "validated_engineered_full": "Complete validated 49-feature set (all retained engineered groups).",
+        "plus_pruned_opinion_composites": "Validated 49 features + 5 previously pruned opinion composite features.",
+        "missing_flags": "Explicit missingness indicators (health_insurance, employment, income, rent, row_missing_count).",
+        "zero_flags": "Explicit indicators capturing undocumented zero entries on opinion_covid_vacc_effective and opinion_covid_risk.",
+        "ordinal": "Monotonic numeric encodings for age_group, education, and income_poverty.",
+        "behavioral": "Aggregate sum and mean across the 7 preventive behavior indicators.",
+        "doctor_interactions": "Multiplicative interaction terms between doctor_recc_covid and vaccine/risk beliefs.",
+        "vulnerability_flags": "Clinical and household flags (household_total, has_chronic_condition, high_risk_elderly, is_healthcare_sector, uninsured_flag).",
+    }
+
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    shared_splits = list(skf.split(raw_base, y))
+
+    def _eval(
+        df_sub: pd.DataFrame,
+        label: str,
+        feature_group: str,
+        evaluation_type: str,
+        reference_variant: str,
+        description: str,
+    ) -> dict:
         df_sub = df_sub.copy()
         cat_c = [c for c in df_sub.columns if c in cat_set]
         num_c = [c for c in df_sub.columns if c not in cat_set]
         for c in cat_c:
             df_sub[c] = df_sub[c].astype(object).where(df_sub[c].notna(), np.nan)
 
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
         oof_lr = np.zeros(len(y), dtype=np.float64)
         oof_lgb = np.zeros(len(y), dtype=np.float64)
 
-        for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(df_sub, y)):
+        for fold_idx, (tr_idx, va_idx) in enumerate(shared_splits):
             X_tr, y_tr = df_sub.iloc[tr_idx], y[tr_idx]
             X_va = df_sub.iloc[va_idx]
 
@@ -379,11 +407,19 @@ def run_feature_ablation(
 
         return {
             "variant": label,
+            "feature_group": feature_group,
+            "evaluation_type": evaluation_type,
+            "reference_variant": reference_variant,
+            "description": description,
             "n_features": int(df_sub.shape[1]),
             "lr_roc_auc": float(roc_auc_score(y, oof_lr)),
             "lr_log_loss": float(log_loss(y, oof_lr)),
+            "lr_brier": float(brier_score_loss(y, oof_lr)),
+            "lr_ece": float(compute_ece(y, oof_lr)),
             "lgb_roc_auc": float(roc_auc_score(y, oof_lgb)),
             "lgb_log_loss": float(log_loss(y, oof_lgb)),
+            "lgb_brier": float(brier_score_loss(y, oof_lgb)),
+            "lgb_ece": float(compute_ece(y, oof_lgb)),
         }
 
     fe_with_pruned = fe_full[all_cols].copy()
@@ -409,15 +445,129 @@ def run_feature_ablation(
     ).astype(np.float32)
 
     records = [
-        _eval(raw_base, "raw_baseline_0_untouched"),
-        _eval(raw_zero_clean, "raw_plus_zero_as_nan"),
-        _eval(fe_full[all_cols], "validated_engineered_full"),
-        _eval(fe_with_pruned, "plus_pruned_opinion_composites"),
+        _eval(
+            raw_base,
+            "raw_baseline_0_untouched",
+            "raw_baseline",
+            "baseline",
+            "raw_baseline_0_untouched",
+            group_descriptions["raw_baseline_0_untouched"],
+        ),
+        _eval(
+            raw_zero_clean,
+            "raw_plus_zero_as_nan",
+            "zero_as_nan",
+            "additive_preprocessing",
+            "raw_baseline_0_untouched",
+            group_descriptions["raw_plus_zero_as_nan"],
+        ),
     ]
+
+    # Additive validation: add each engineered group individually onto raw_plus_zero_as_nan
+    for gname, gcols in groups.items():
+        if gname == "zero_flags":
+            continue  # zero_flags are evaluated in raw_plus_zero_as_nan vs raw_baseline_0_untouched
+        df_add = raw_zero_clean.copy()
+        for col in gcols:
+            df_add[col] = fe_full[col]
+        records.append(
+            _eval(
+                df_add,
+                f"add_{gname}",
+                gname,
+                "additive_group",
+                "raw_plus_zero_as_nan",
+                f"Add {gname} to raw_plus_zero_as_nan: {group_descriptions[gname]}",
+            )
+        )
+
+    records.extend(
+        [
+            _eval(
+                fe_full[all_cols],
+                "validated_engineered_full",
+                "full_49_features",
+                "full_validated",
+                "validated_engineered_full",
+                group_descriptions["validated_engineered_full"],
+            ),
+            _eval(
+                fe_with_pruned,
+                "plus_pruned_opinion_composites",
+                "pruned_opinion_composites",
+                "add_candidate_to_full",
+                "validated_engineered_full",
+                group_descriptions["plus_pruned_opinion_composites"],
+            ),
+        ]
+    )
+
+    # Leave-one-group-out ablation from validated_engineered_full
     for gname, gcols in groups.items():
         keep = [c for c in all_cols if c not in set(gcols)]
-        records.append(_eval(fe_full[keep], f"ablate_without_{gname}"))
+        records.append(
+            _eval(
+                fe_full[keep],
+                f"ablate_without_{gname}",
+                gname,
+                "leave_one_group_out",
+                "validated_engineered_full",
+                f"Remove {gname} from validated 49-feature set: {group_descriptions[gname]}",
+            )
+        )
 
-    return pd.DataFrame(records)
+    df_out = pd.DataFrame(records)
+    by_var = df_out.set_index("variant")
+
+    lr_auc_deltas = []
+    lr_ll_deltas = []
+    lgb_auc_deltas = []
+    lgb_ll_deltas = []
+    decisions = []
+    reasons = []
+
+    for _, row in df_out.iterrows():
+        ref = by_var.loc[row["reference_variant"]]
+        d_lr_auc = float(row["lr_roc_auc"] - ref["lr_roc_auc"])
+        d_lr_ll = float(row["lr_log_loss"] - ref["lr_log_loss"])
+        d_lgb_auc = float(row["lgb_roc_auc"] - ref["lgb_roc_auc"])
+        d_lgb_ll = float(row["lgb_log_loss"] - ref["lgb_log_loss"])
+        lr_auc_deltas.append(d_lr_auc)
+        lr_ll_deltas.append(d_lr_ll)
+        lgb_auc_deltas.append(d_lgb_auc)
+        lgb_ll_deltas.append(d_lgb_ll)
+
+        etype = row["evaluation_type"]
+        if etype in {"baseline", "full_validated"}:
+            decisions.append("REFERENCE")
+            reasons.append("Reference benchmark configuration.")
+        elif etype == "add_candidate_to_full":
+            decisions.append("PRUNE")
+            reasons.append(
+                f"Degrades/adds collinearity without CV gain (LR dAUC={d_lr_auc:+.4f}, "
+                f"LGB dAUC={d_lgb_auc:+.4f}, LGB dLogLoss={d_lgb_ll:+.4f}); excluded."
+            )
+        elif etype in {"additive_preprocessing", "additive_group"}:
+            improved_any = (d_lr_auc > 0.0 or d_lgb_auc > 0.0) or (d_lr_ll < 0.0 or d_lgb_ll < 0.0)
+            decisions.append("RETAIN" if improved_any else "MARGINAL_RETAIN")
+            reasons.append(
+                f"Additive delta vs {row['reference_variant']}: LR dAUC={d_lr_auc:+.4f} "
+                f"(dLogLoss={d_lr_ll:+.4f}), LGB dAUC={d_lgb_auc:+.4f} (dLogLoss={d_lgb_ll:+.4f})."
+            )
+        else:  # leave_one_group_out: negative dAUC or positive dLogLoss when removed proves group helps
+            hurt_when_removed = (d_lr_auc < 0.0 or d_lgb_auc < 0.0 or d_lr_ll > 0.0 or d_lgb_ll > 0.0)
+            decisions.append("RETAIN" if hurt_when_removed else "LOW_IMPACT")
+            reasons.append(
+                f"Removing group from full set gives LR dAUC={d_lr_auc:+.4f} "
+                f"(dLogLoss={d_lr_ll:+.4f}), LGB dAUC={d_lgb_auc:+.4f} (dLogLoss={d_lgb_ll:+.4f})."
+            )
+
+    df_out["lr_auc_delta_vs_ref"] = lr_auc_deltas
+    df_out["lr_logloss_delta_vs_ref"] = lr_ll_deltas
+    df_out["lgb_auc_delta_vs_ref"] = lgb_auc_deltas
+    df_out["lgb_logloss_delta_vs_ref"] = lgb_ll_deltas
+    df_out["decision"] = decisions
+    df_out["reason"] = reasons
+    return df_out
 
 

@@ -39,10 +39,10 @@ Slide-by-slide presentation outline ready for your team's pitch deck, backed dir
 
 ## Slide 4: Multi-Model Benchmark (Leakage-Free Nested 5x4 Stratified CV)
 * Trained **6 distinct model families** (`LogisticRegression`, `RandomForest`, `HistGradientBoosting`, `LightGBM`, `XGBoost`, `CatBoost`) + nested cross-fitted **`Uncalibrated_Stack` / `Calibrated_Stack`** over `49` ablation-validated features (pruning 5 noisy opinion composites).
-* **Nested Stack achieved #1 across every classification & cost metric** (isolated inner calibration confirmed uncalibrated L2 logit stacking needed no Platt/Isotonic warp in 5/5 folds):
+* **Nested Stack achieved #1 across every classification & cost metric** (isolated nested calibration confirmed uncalibrated L2 logit stacking needed no Platt/Isotonic warp in 5/5 folds):
   * **ROC-AUC:** `0.8670` | **LogLoss:** `0.4173` | **Brier:** `0.1313` | **ECE:** `0.0088`
-  * **Town Cost (OOF):** **`\$13,970,808`** (`\$2,937.51/person`, `1,476` allocated, `481` wasted, `559` law payouts, `266.3` expected hospitalisations)
-  * **Savings:** **`\$3,181,524`** vs. Treat None (`\$17.15M`), **`\$3,319,645`** vs. Treat All (`\$17.29M`), and **`\$444,710`** saved over a fixed `0.50` threshold (`\$14.42M`)—capturing **68.2%** of theoretical oracle savings.
+  * **Town Cost (OOF):** **`\$14,281,676`** (`\$3,002.88/person`, `1,487` allocated, `491` wasted, `558` law payouts, `273.5` expected hospitalisations)
+  * **Savings:** **`\$3,318,874`** vs. Treat None (`\$17.60M`), **`\$3,299,690`** vs. Treat All (`\$17.58M`), and **`\$458,727`** saved over a fixed `0.50` threshold (`\$14.74M`)—capturing **68.7%** of theoretical oracle savings.
 
 ![Model Cost Comparison](outputs/figures/04_model_cost_comparison.png)
 ![Calibration and Threshold Sweep](outputs/figures/05_calibration_and_thresholds.png)
@@ -51,7 +51,7 @@ Slide-by-slide presentation outline ready for your team's pitch deck, backed dir
 
 ## Slide 5: Explainable AI (5-Fold OOF SHAP Stability & Segment Impact)
 * **Top Global Drivers (OOF Mean `|SHAP| ± Fold SD`):** `health_insurance` (`0.533 ± 0.060`), `opinion_covid_risk` (`0.455 ± 0.069`), `doctor_x_effective` (`0.381 ± 0.040`), `opinion_covid_vacc_effective` (`0.292 ± 0.013`), `doctor_x_risk` (`0.256 ± 0.075`), `employment_sector` (`0.164 ± 0.034`, categorical), `age_ordinal` (`0.133 ± 0.022`), `health_worker` (`0.131 ± 0.010`).
-* **Allocation Shift Across Ages:** Bayes policy targets **58.3%** of `65+ Years` vs. only **6.1%** of `18–34 Years` on OOF validation.
+* **Allocation Shift Across Ages:** Bayes policy targets **58.7%** of `65+ Years` vs. only **6.1%** of `18–34 Years` on OOF validation.
 
 ![SHAP Importance](outputs/figures/06_explainability_shap_importance.png)
 ![SHAP Beeswarm](outputs/figures/08_explainability_shap_beeswarm.png)
@@ -61,13 +61,13 @@ Slide-by-slide presentation outline ready for your team's pitch deck, backed dir
 ---
 
 ## Slide 6: Robustness Check & Top 5 Canvas Submissions
-* **Cross-Scenario & VE Sensitivity:** Tested `conservative` (`0.5x`), `base` (`1.0x`), and `severe` (`1.5x`) risk profiles alongside `waned_omicron` (`65%/55%`), `base` (`86%/80%`), `boosted` (`91%/86%`) VE regimes—Bayes policy saved `$140k–$767k` over fixed `0.50` across every single regime, and `Calibrated_Stack` captured **58.4% / 68.2% / 61.9%** of oracle savings across the 3 scenarios.
+* **Cross-Scenario & VE Sensitivity:** Tested `conservative` (`0.5x`), `base` (`1.0x`), and `severe` (`1.5x`) risk profiles alongside `waned_omicron` (`65%/55%`), `base` (`86%/80%`), `boosted` (`91%/86%`) VE regimes—Bayes policy saved `$147k–$824k` over fixed `0.50` across every single regime, and `Calibrated_Stack` captured **58.8% / 68.7% / 61.2%** of oracle savings across the 3 scenarios.
 * **Top 5 Exported Diverse Submissions (`submissions/`):**
-  1. `Calibrated_Stack` (`bayes_exact`, inner-CV calibrator=`none`, `1,546` test vaccines / `32.6%`)
-  2. `CatBoost` (`bayes_scaled=0.88`, `1,682` / `35.4%`)
-  3. `RandomForest` (`bayes_exact`, `1,495` / `31.5%`)
-  4. `LightGBM` (`bayes_scaled=1.17`, `1,296` / `27.3%`)
-  5. `XGBoost` (`bayes_exact`, `1,503` / `31.6%`)
+  1. `Calibrated_Stack` (`bayes_exact`, nested inner-CV calibrator=`none`, `1,555` test vaccines / `32.7%`)
+  2. `CatBoost` (`bayes_scaled=0.895`, `1,663` / `35.0%`)
+  3. `RandomForest` (`bayes_exact`, `1,505` / `31.7%`)
+  4. `LightGBM` (`bayes_scaled=1.16`, `1,315` / `27.7%`)
+  5. `LogisticRegression` (`bayes_exact`, `1,589` / `33.5%`)
 
 ![Meta Weights and Sensitivity Matrix](outputs/figures/09_meta_weights_and_sensitivity.png)
 

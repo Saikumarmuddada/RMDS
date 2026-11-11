@@ -7,7 +7,11 @@ import json
 from pathlib import Path
 
 from src.config import DATASET_C_CONFIG, FIGURES_DIR, OUTPUT_DIR, SUBMISSIONS_DIR
-from src.cost_model import compute_town_cost, estimate_hospitalisation_probabilities
+from src.cost_model import (
+    compute_town_cost,
+    estimate_hospitalisation_probabilities,
+    summarize_cost_policies_table,
+)
 from src.data_prep import (
     audit_dataset_preprocessing,
     engineer_features,
@@ -22,11 +26,13 @@ from src.modeling import export_top5_submissions, train_and_evaluate_all_models
 def write_markdown_report(
     eda_summary: dict,
     comp_df,
+    policy_df,
     manifest_df,
     explain_summary: dict,
     meta_weights: dict,
     feat_train,
     out_path: Path,
+    best_model_name: str = "",
 ) -> None:
     """Write a complete hackathon summary report with observed CV, calibration, and cost results."""
     y = feat_train[DATASET_C_CONFIG.target_col].to_numpy(dtype=int)
@@ -65,7 +71,26 @@ def write_markdown_report(
     lines.extend(
         [
             "",
-            "## 4. Meta-Learner Logistic Regression Coefficients (Log-Odds)",
+            f"## 4. Cost Policy & Component Breakdown ({best_model_name}, 5-Fold OOF)",
+            "",
+            "| Policy | Total Cost ($) | Vaccine Send ($) | Wasted ($) | Law Comp ($) | Exp. Hosp ($) | Allocated | Accepted | Wasted | Unmet | Exp. Hosp | Savings vs 0.50 ($) |",
+            "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for _, prow in policy_df.iterrows():
+        lines.append(
+            f"| {prow['policy_name']} | ${prow['total_cost']:,.0f} | ${prow['vaccine_send_cost']:,.0f} | "
+            f"${prow['wasted_vaccine_cost']:,.0f} | ${prow['law_penalty_cost']:,.0f} | "
+            f"${prow['hospitalisation_cost']:,.0f} | {int(prow['vaccines_allocated']):,} | "
+            f"{int(prow['vaccines_accepted']):,} | {int(prow['wasted_vaccines']):,} | "
+            f"{int(prow['law_compensation_count']):,} | {prow['expected_hospitalisations']:.1f} | "
+            f"${prow['savings_vs_fixed_0.5']:,.0f} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 5. Meta-Learner Logistic Regression Coefficients (Log-Odds)",
         ]
     )
     for m, w in sorted(meta_weights.items(), key=lambda kv: -kv[1]):
@@ -74,7 +99,7 @@ def write_markdown_report(
     lines.extend(
         [
             "",
-            "## 5. Top 10 Explainable AI Drivers (5-Fold OOF LightGBM Mean |SHAP| ± SD)",
+            "## 6. Top 10 Explainable AI Drivers (5-Fold OOF LightGBM Mean |SHAP| ± SD)",
         ]
     )
     for item in explain_summary["top_shap_features"][:10]:
@@ -85,7 +110,7 @@ def write_markdown_report(
     lines.extend(
         [
             "",
-            "## 6. Top 5 Ranked Submission Files",
+            "## 7. Top 5 Ranked Submission Files",
             "",
             "| Order | Filename | Model | Policy | OOF Total Cost ($) | Test Predicted Vaccinations |",
             "| ---: | :--- | :--- | :--- | ---: | ---: |",
@@ -141,15 +166,21 @@ def main() -> None:
         submissions_dir=SUBMISSIONS_DIR,
     )
 
+    best_result = min(results, key=lambda r: r.policy_results["bayes_exact"]["breakdown"].total_cost)
+    policy_df = summarize_cost_policies_table(best_result.policy_results)
+    policy_df.to_csv(OUTPUT_DIR / "cost_policy_comparison.csv", index=False)
+
     print("[6/6] Writing summary reports...")
     write_markdown_report(
         eda_summary,
         comp_df,
+        policy_df,
         manifest_df,
         explain_summary,
         artifacts["meta_weights"],
         feat_train,
         OUTPUT_DIR / "hackathon_report.md",
+        best_model_name=best_result.name,
     )
 
     (OUTPUT_DIR / "meta_summary.json").write_text(
